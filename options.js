@@ -23,11 +23,39 @@ async function refreshSyncStatus() {
   syncStatus.textContent = `Last synced ${new Date(indexSyncedAt).toLocaleString()} (${folderCount} folders indexed).`;
 }
 
+// Polls the background script's live progress so "Syncing…" isn't a black
+// box — shows real file/page counts and flags whether repeated rate-limit
+// backoff (not just raw file count) is what's making it slow. Runs
+// continuously in the background so it also picks up a sync that was
+// triggered by just browsing Drive in another tab, not only the button here.
+let progressPollHandle = null;
+function startProgressPolling() {
+  if (progressPollHandle) return;
+  progressPollHandle = setInterval(async () => {
+    const resp = await browser.runtime.sendMessage({ type: "GET_SYNC_PROGRESS" }).catch(() => null);
+    const progress = resp && resp.progress;
+    if (!progress) {
+      syncNowBtn.disabled = false;
+      syncNowBtn.textContent = "Sync now";
+      return;
+    }
+    syncNowBtn.disabled = true;
+    syncNowBtn.textContent = "Syncing…";
+    const elapsedSec = Math.round((Date.now() - progress.startedAt) / 1000);
+    const rateNote =
+      progress.rateLimitHits > 0
+        ? ` — hit the API rate limit ${progress.rateLimitHits}× so far (see "Speeding up a slow sync" below)`
+        : "";
+    syncStatus.textContent = `Syncing… ${progress.filesSoFar.toLocaleString()} files across ${progress.pageCount} pages, ${elapsedSec}s elapsed${rateNote}.`;
+  }, 1000);
+}
+
 (async () => {
   redirectUriBox.textContent = browser.identity.getRedirectURL();
   const { clientId } = await browser.storage.local.get("clientId");
   if (clientId) clientIdInput.value = clientId;
   await refreshSyncStatus();
+  startProgressPolling();
 })();
 
 saveBtn.addEventListener("click", async () => {
@@ -57,13 +85,9 @@ connectBtn.addEventListener("click", async () => {
 });
 
 syncNowBtn.addEventListener("click", async () => {
-  syncNowBtn.disabled = true;
-  const original = syncNowBtn.textContent;
-  syncNowBtn.textContent = "Syncing…";
-  syncStatus.textContent = "Syncing your Drive — this can take a bit on a large Drive…";
+  // Button state during the sync is driven by startProgressPolling() above,
+  // which is already running and will pick this up within a second.
   const resp = await browser.runtime.sendMessage({ type: "SYNC_NOW" });
-  syncNowBtn.disabled = false;
-  syncNowBtn.textContent = original;
   if (resp && resp.ok) {
     setStatus(`Synced ${resp.folderCount} folders.`, false);
   } else {

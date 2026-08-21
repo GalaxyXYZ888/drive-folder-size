@@ -12,6 +12,16 @@ async function refreshConnStatus() {
     return;
   }
 
+  const progressResp = await browser.runtime.sendMessage({ type: "GET_SYNC_PROGRESS" }).catch(() => null);
+  if (progressResp && progressResp.progress) {
+    const p = progressResp.progress;
+    const elapsedSec = Math.round((Date.now() - p.startedAt) / 1000);
+    connStatus.textContent = `Syncing your Drive… ${p.filesSoFar.toLocaleString()} files, ${elapsedSec}s elapsed. See the setup page for details.`;
+    connStatus.style.color = "#5f6368";
+    reconnectBtn.style.display = "none";
+    return;
+  }
+
   const authCheck = await browser.runtime.sendMessage({ type: "CHECK_AUTH" }).catch(() => ({ ok: false }));
   if (authCheck && authCheck.ok) {
     connStatus.textContent = "";
@@ -31,6 +41,9 @@ async function refreshConnStatus() {
   const { enabled } = await browser.runtime.sendMessage({ type: "GET_ENABLED" });
   toggle.checked = !!enabled;
   await refreshConnStatus();
+  // Popups are short-lived, but while the user keeps this one open (e.g.
+  // watching a sync progress), keep it live rather than a one-time snapshot.
+  setInterval(refreshConnStatus, 1500);
 })();
 
 toggle.addEventListener("change", async () => {

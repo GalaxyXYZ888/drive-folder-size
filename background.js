@@ -130,14 +130,26 @@ function throttled(task) {
   });
 }
 
+// Visible while a full sync is running — polled by popup.js/options.js so
+// "is this actually working or just stuck?" has a real answer instead of a
+// static "Syncing…" label. Also logged to the background console (inspect
+// it via about:debugging → this extension → Inspect) so a slow sync's cause
+// (huge file count vs. repeated rate-limit backoff) is visible, not guessed.
+let syncProgress = null; // { filesSoFar, pageCount, rateLimitHits, startedAt } | null
+
 async function fetchDriveJson(url, token, attempt = 0) {
   const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 
   if (resp.status === 401) throw new Error("AUTH_EXPIRED");
 
   if (resp.status === 403 || resp.status === 429 || resp.status >= 500) {
+    if (syncProgress) syncProgress.rateLimitHits++;
     if (attempt >= 4) throw new Error("RATE_LIMITED_OR_FORBIDDEN");
     const delay = 300 * 2 ** attempt + Math.random() * 200;
+    console.log(
+      `[Drive Folder Size] HTTP ${resp.status} — backing off ${Math.round(delay)}ms (attempt ${attempt + 1}/5). ` +
+        `If this keeps happening, your Google Cloud project's Drive API quota is probably too low — see the setup page.`
+    );
     await new Promise((r) => setTimeout(r, delay));
     return fetchDriveJson(url, token, attempt + 1);
   }
@@ -174,7 +186,13 @@ async function fetchAllFiles(token, onPage) {
     // last), but still goes through the shared throttle for retry/backoff.
     const data = await throttled(() => fetchDriveJson(url.toString(), token));
     pageCount++;
-    if (onPage) onPage(data.files || [], pageCount);
+    const files = data.files || [];
+    if (syncProgress) {
+      syncProgress.filesSoFar += files.length;
+      syncProgress.pageCount = pageCount;
+    }
+    console.log(`[Drive Folder Size] page ${pageCount}: ${files.length} files (running total via syncProgress)`);
+    if (onPage) onPage(files, pageCount);
     pageToken = data.nextPageToken || null;
   } while (pageToken);
 }
@@ -253,12 +271,14 @@ async function getIndex(token, forceRefresh) {
   }
   if (fullSyncInFlight) return fullSyncInFlight;
 
+  syncProgress = { filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt: Date.now() };
   fullSyncInFlight = (async () => {
     const index = await buildFullIndex(token);
     await browser.storage.local.set({ driveIndex: index, indexSyncedAt: Date.now() });
     return index;
   })().finally(() => {
     fullSyncInFlight = null;
+    syncProgress = null;
   });
 
   return fullSyncInFlight;
@@ -312,6 +332,9 @@ browser.runtime.onMessage.addListener((msg) => {
   switch (msg.type) {
     case "GET_FOLDER_CONTENTS":
       return getFolderContents(msg.folderId);
+
+    case "GET_SYNC_PROGRESS":
+      return Promise.resolve({ progress: syncProgress });
 
     case "GET_ENABLED":
       return getSetting("enabled").then((v) => ({ enabled: !!v }));

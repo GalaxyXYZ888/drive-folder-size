@@ -190,6 +190,27 @@
       </p>
     </div>
 
+    <h2>Speeding up a slow sync</h2>
+    <p class="note">
+      A sync that takes several minutes usually means one of two things: you genuinely have a lot
+      of files (backup tools especially — phone photo sync, game-save backup tools, full computer
+      backups — tend to create huge numbers of small files, easily 100,000+), and/or your Google
+      Cloud project's default Drive API quota is being hit repeatedly, adding retry delays on top.
+      The live status above will say "hit the API rate limit N× so far" if that's happening.
+    </p>
+    <p class="note">
+      If so: go to
+      <a
+        href="https://console.cloud.google.com/apis/api/drive.googleapis.com/quotas"
+        target="_blank"
+        >Google Cloud Console → Drive API → Quotas</a
+      >
+      (same project you created the OAuth client in), find "Queries per 100 seconds per user", and
+      request a higher limit — this is normally free and self-service for reasonable increases, no
+      approval wait. It won't reduce the number of pages a huge file list needs, but it removes the
+      backoff delays between them, which is usually the bigger chunk of a slow sync's total time.
+    </p>
+
     <h2>Notes &amp; limitations</h2>
     <p class="note">
       Only the list view on "My Drive" and folder pages is supported (not Grid view, Recent,
