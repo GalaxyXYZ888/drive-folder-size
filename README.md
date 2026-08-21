@@ -116,3 +116,4 @@ Temporary add-ons disappear on Firefox restart. Options, cheapest first:
   after that fetches just what changed. Fixed a navigation bug where
   visiting Computers (or Recent/Starred) and returning to My Drive wouldn't
   refresh badges until manually re-entering the folder.
+- **1.0** — Approved AMO first version.
