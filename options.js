@@ -13,14 +13,30 @@ function setStatus(text, isError) {
   statusLine.style.color = isError ? "#c5221f" : "#188038";
 }
 
+function formatDuration(ms) {
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}m ${sec}s`;
+}
+
 async function refreshSyncStatus() {
-  const { indexSyncedAt, driveIndex } = await browser.storage.local.get(["indexSyncedAt", "driveIndex"]);
+  const { indexSyncedAt, lastSyncMeta } = await browser.storage.local.get(["indexSyncedAt", "lastSyncMeta"]);
   if (!indexSyncedAt) {
     syncStatus.textContent = "Not synced yet — happens automatically the first time you open a folder.";
     return;
   }
-  const folderCount = driveIndex ? Object.keys(driveIndex.totals || {}).length : 0;
-  syncStatus.textContent = `Last synced ${new Date(indexSyncedAt).toLocaleString()} (${folderCount} folders indexed).`;
+  const when = new Date(indexSyncedAt).toLocaleString();
+  if (!lastSyncMeta) {
+    syncStatus.textContent = `Last synced ${when}.`;
+    return;
+  }
+  const { mode, folderCount, fileCount, durationMs } = lastSyncMeta;
+  const modeLabel = mode === "incremental" ? "incremental check" : "full sync";
+  syncStatus.textContent =
+    `Last synced ${when} — ${folderCount.toLocaleString()} folders, ${fileCount.toLocaleString()} files, ` +
+    `took ${formatDuration(durationMs)} (${modeLabel}).`;
 }
 
 // Polls the background script's live progress so "Syncing…" isn't a black
@@ -40,13 +56,14 @@ function startProgressPolling() {
       return;
     }
     syncNowBtn.disabled = true;
-    syncNowBtn.textContent = "Syncing…";
+    syncNowBtn.textContent = progress.mode === "incremental" ? "Checking for changes…" : "Full sync…";
     const elapsedSec = Math.round((Date.now() - progress.startedAt) / 1000);
     const rateNote =
       progress.rateLimitHits > 0
         ? ` — hit the API rate limit ${progress.rateLimitHits}× so far (see "Speeding up a slow sync" below)`
         : "";
-    syncStatus.textContent = `Syncing… ${progress.filesSoFar.toLocaleString()} files across ${progress.pageCount} pages, ${elapsedSec}s elapsed${rateNote}.`;
+    const label = progress.mode === "incremental" ? "Checking for changes" : "Full sync";
+    syncStatus.textContent = `${label}… ${progress.filesSoFar.toLocaleString()} items across ${progress.pageCount} page(s), ${elapsedSec}s elapsed${rateNote}.`;
   }, 1000);
 }
 

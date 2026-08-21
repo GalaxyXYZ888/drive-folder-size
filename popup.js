@@ -16,7 +16,8 @@ async function refreshConnStatus() {
   if (progressResp && progressResp.progress) {
     const p = progressResp.progress;
     const elapsedSec = Math.round((Date.now() - p.startedAt) / 1000);
-    connStatus.textContent = `Syncing your Drive… ${p.filesSoFar.toLocaleString()} files, ${elapsedSec}s elapsed. See the setup page for details.`;
+    const label = p.mode === "incremental" ? "Checking for changes" : "Full sync";
+    connStatus.textContent = `${label}… ${p.filesSoFar.toLocaleString()} items, ${elapsedSec}s elapsed. See the setup page for details.`;
     connStatus.style.color = "#5f6368";
     reconnectBtn.style.display = "none";
     return;

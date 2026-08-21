@@ -20,8 +20,13 @@
 // 2. Folder detection is still done via the API (background script), not
 //    DOM/icon sniffing — see background.js. All of a folder's children and
 //    their sizes now arrive in ONE message per folder navigation (the
-//    background does one full-Drive listing up front and everything after
-//    that is in-memory arithmetic, so this is normally fast).
+//    background does one full/incremental sync up front and everything
+//    after that is in-memory arithmetic, so this is normally fast).
+//
+// 3. "Root doesn't refresh after visiting Computers." Computers, Recent,
+//    Starred etc. all fell through to the same "root" key as My Drive
+//    itself (both have no folder id in the URL), so bouncing through one and
+//    back looked like no navigation happened at all — see computeContextKey.
 //
 // DOM facts this relies on (verified live on drive.google.com, Aug 2026):
 //   - Each row is [role="row"][data-id="<driveFileId>"]
@@ -49,13 +54,32 @@ let contentsRequestToken = 0; // guards against a stale response applying after 
 const resultsCache = new Map(); // folderId -> {status:'pending'|'done'|'error', size?, hasNativeDocs?, message?}
 const rowCellIndex = new WeakMap(); // row element -> td index of its size cell
 
+function isMyDriveRootUrl() {
+  return /\/drive\/my-drive/.test(location.pathname);
+}
+
 function parseFolderIdFromUrl() {
   const m = location.pathname.match(/\/drive\/(?:u\/\d+\/)?folders\/([a-zA-Z0-9_-]+)/);
-  return m ? m[1] : null; // null => root ("My Drive")
+  return m ? m[1] : null; // null => root ("My Drive") OR an unsupported page — see computeContextKey
 }
 
 function isSupportedListingUrl() {
-  return /\/drive\/(my-drive|(u\/\d+\/)?folders\/)/.test(location.pathname);
+  return isMyDriveRootUrl() || /\/drive\/(u\/\d+\/)?folders\//.test(location.pathname);
+}
+
+// A folder's id (or null for My Drive root) uniquely identifies WHAT to
+// show, but "root" was also what a totally unrelated page (Computers,
+// Recent, Starred — none of which match the folders/ URL pattern) collapsed
+// to, since parseFolderIdFromUrl() returns null for those too. That made
+// Root → Computers → Root look like "no change" to refreshFolderContext()'s
+// early-exit check, so re-entering root after visiting Computers never
+// re-triggered a re-scan. Give every unsupported page its own distinct key
+// (its raw path) so leaving and coming back to root is always a real change.
+function computeContextKey() {
+  if (isMyDriveRootUrl()) return "root";
+  const folderId = parseFolderIdFromUrl();
+  if (folderId) return folderId;
+  return `unsupported:${location.pathname}`;
 }
 
 function formatBytes(bytes) {
@@ -134,11 +158,10 @@ function startObserving() {
 }
 
 async function refreshFolderContext() {
-  const folderId = parseFolderIdFromUrl();
-  const key = folderId || "root";
+  const key = computeContextKey();
   if (key === currentFolderKey) return;
   currentFolderKey = key;
-  currentFolderId = folderId;
+  currentFolderId = key === "root" ? null : parseFolderIdFromUrl();
   folderSizes = new Map();
   hasNativeDocsForCurrentFolder = false;
 

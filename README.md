@@ -4,14 +4,23 @@ Shows recursive folder sizes inline in Google Drive's list view — the "File si
 column that normally just shows "—" for folders gets filled in. Toggle on/off
 from the toolbar icon.
 
-**How it computes sizes (v0.2):** the first time it needs folder sizes, it
-fetches your entire My Drive file list once (paginated — every file's id,
-size, mimeType and parent folder), then computes every folder's recursive
-size as plain in-memory arithmetic over that list: for each file, walk up its
-parent chain and add its size to every ancestor folder. No per-folder API
-calls, no waiting on deep/wide trees — one sync, then it's all just math,
-cached for 24h. Use "Sync now" on the setup page to refresh early after big
-uploads/deletes.
+**How it computes sizes:** the first time it needs folder sizes, it
+fetches your entire My Drive file list once (paginated at 1000 files/request
+— every file's id, size, mimeType and parent folder), then computes every
+folder's recursive size as plain in-memory arithmetic over that list: for
+each file, walk up its parent chain and add its size to every ancestor
+folder. That full listing is the one genuinely slow step — Drive's
+pagination is sequential by design (each page needs the previous page's
+token), so a few hundred thousand files means a few hundred sequential
+requests, with no way to parallelize around that.
+
+Every sync *after* the first one uses Drive's `changes.list` API instead —
+the same mechanism Google's own Drive desktop client uses — to fetch only
+what's actually different since the last sync (typically a handful of files,
+one request) rather than re-listing everything. A full resync only happens
+again if Google invalidates the old checkpoint token (rare) or "Clear cache"
+is used. Use "Sync now" on the setup page to check immediately instead of
+waiting for the periodic refresh.
 
 ## Install (unpacked / temporary)
 
@@ -63,6 +72,11 @@ Full step-by-step with links is on the in-extension setup page (`options.html`).
   is checked/repaired continuously, not just once). If badges stop appearing
   at all, the fix is almost always in `content.js`'s `ROW_SELECTOR` /
   `findInitialSizeCellIndex`.
+- **Local storage footprint.** The full per-file index (id/size/mimeType/
+  parents for every file) is kept in `storage.local` so incremental syncs
+  have something to patch — for a few hundred thousand files that's tens of
+  MB. The manifest requests `unlimitedStorage` for this; it doesn't prompt
+  for extra permission in Firefox.
 
 ## Making it permanent
 
@@ -80,7 +94,25 @@ Temporary add-ons disappear on Firefox restart. Options, cheapest first:
 ## Files
 
 - `manifest.json` — extension manifest (MV3)
-- `background.js` — OAuth, the one full-Drive sync, in-memory folder totals
-- `content.js` — injects size badges into the Drive page, hover-resistant
-- `popup.html`/`popup.js` — on/off toggle, Reconnect button, link to setup
+- `background.js` — OAuth, full + incremental (`changes.list`) sync, in-memory folder totals
+- `content.js` — injects size badges into the Drive page, hover-resistant, tracks Drive SPA navigation
+- `popup.html`/`popup.js` — on/off toggle, live sync progress, Reconnect button, link to setup
 - `options.html`/`options.js` — setup page (Client ID entry, connect/test, sync now, disconnect)
+
+## Version history
+
+- **0.2** — First working version. Folder detection via the Drive API (not icon/DOM
+  sniffing); recursive size computed by walking the folder tree one API call per
+  folder. Worked, but slow on wide/deep trees and fragile against Drive's React
+  re-renders (badges could revert on hover).
+- **0.3** — Rebuilt size computation around one full Drive file listing +
+  in-memory arithmetic instead of per-folder API calls (the real fix for
+  speed). Rewrote badge rendering to keep re-asserting the correct value
+  instead of writing it once, fixing the hover-revert bug. Added live sync
+  progress, a "Sync now" button, and a Reconnect flow that never pops an
+  unrequested OAuth window.
+- **0.4** — Replaced full-resync-every-time with Drive's `changes.list` API:
+  the initial full listing only ever needs to happen once, and every sync
+  after that fetches just what changed. Fixed a navigation bug where
+  visiting Computers (or Recent/Starred) and returning to My Drive wouldn't
+  refresh badges until manually re-entering the folder.

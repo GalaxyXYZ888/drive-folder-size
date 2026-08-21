@@ -1,20 +1,31 @@
 // Drive Folder Size — background script
 //
-// Architecture (v0.2): instead of walking the folder tree one API call per
-// folder (slow — O(number of folders) sequential round-trips for a deep/wide
-// tree), we fetch the user's ENTIRE file list ONCE (paginated, ~1000
-// files/page, every file's id/size/mimeType/parents), then compute every
-// folder's recursive size as plain in-memory arithmetic: for each non-folder
-// file, walk its parent chain and add its size to every ancestor folder's
-// running total. That's it — no more per-folder network calls after the
-// initial sync. The whole index is cached for 24h in storage.local.
+// Architecture (v0.3): a folder's recursive size is computed as plain
+// in-memory arithmetic over a locally-held copy of every file's
+// id/size/mimeType/parents — walk each file's parent chain, add its size to
+// every ancestor. No per-folder network calls, ever.
+//
+// Getting that local copy has two paths:
+//   - FULL sync (v0.2): fetch every file, paginated at 1000/page. For a
+//     Drive with hundreds of thousands of files this is inherently a lot of
+//     sequential round-trips — Drive's pagination requires each page's token
+//     before the next page can be requested, so this can't be parallelized
+//     away, and it's close to a hard floor imposed by the API itself.
+//   - INCREMENTAL sync (v0.3, new): after any full sync, we hold onto a
+//     Drive "changes" API checkpoint token. Every sync after that calls
+//     changes.list with that token and gets back only what's actually
+//     different since last time (usually a handful of files, one request) —
+//     this is the same mechanism Google's own Drive desktop client uses to
+//     avoid re-scanning everything on every refresh. A full resync only
+//     happens once (first install) or if Google invalidates an old
+//     checkpoint token (rare; we detect it and fall back automatically).
 //
 // Responsibilities:
 //  - OAuth (implicit flow via browser.identity.launchWebAuthFlow, no client secret needed)
-//  - The one full-Drive listing + in-memory folder-size computation
+//  - The full/incremental sync + in-memory folder-size computation
 //  - Answering messages from content.js / popup.js / options.js
 
-const INDEX_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+const SYNC_CHECK_INTERVAL_MS = 15 * 60 * 1000; // don't even check for changes more often than this
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const ROOT_KEY = "root"; // our internal alias for "My Drive" itself
@@ -130,12 +141,12 @@ function throttled(task) {
   });
 }
 
-// Visible while a full sync is running — polled by popup.js/options.js so
-// "is this actually working or just stuck?" has a real answer instead of a
+// Visible while a sync is running — polled by popup.js/options.js so "is
+// this actually working or just stuck?" has a real answer instead of a
 // static "Syncing…" label. Also logged to the background console (inspect
 // it via about:debugging → this extension → Inspect) so a slow sync's cause
 // (huge file count vs. repeated rate-limit backoff) is visible, not guessed.
-let syncProgress = null; // { filesSoFar, pageCount, rateLimitHits, startedAt } | null
+let syncProgress = null; // { mode:'full'|'incremental', filesSoFar, pageCount, rateLimitHits, startedAt } | null
 
 async function fetchDriveJson(url, token, attempt = 0) {
   const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
@@ -197,25 +208,93 @@ async function fetchAllFiles(token, onPage) {
   } while (pageToken);
 }
 
-// Builds { totals: {id -> {size, hasNativeDocs}}, childFolders: {id -> [folderId,...]} }
-// for EVERY folder in the Drive (keyed by "root" for My Drive itself), in one
-// pass of pure in-memory arithmetic over the full file list.
-async function buildFullIndex(token) {
-  const rootId = await fetchRootId(token);
+async function fetchStartPageToken(token) {
+  const data = await throttled(() =>
+    fetchDriveJson("https://www.googleapis.com/drive/v3/changes/startPageToken", token)
+  );
+  return data.startPageToken;
+}
+
+// Full listing, but building the same compact {m,s,p} shape we persist —
+// short keys because this gets JSON-stringified as a whole and can run into
+// the hundreds of thousands of entries.
+async function fetchAllFilesAsMap(token, rootId) {
   const normalize = (id) => (id === rootId ? ROOT_KEY : id);
-
-  const mimeById = new Map();
-  const sizeById = new Map();
-  const parentsById = new Map();
-
-  await fetchAllFiles(token, (files) => {
-    for (const f of files) {
-      mimeById.set(f.id, f.mimeType);
-      sizeById.set(f.id, f.size ? parseInt(f.size, 10) : 0);
-      parentsById.set(f.id, (f.parents || []).map(normalize));
+  const files = new Map(); // id -> {m: mimeType, s: size, p: [parentId,...]}
+  await fetchAllFiles(token, (page) => {
+    for (const f of page) {
+      files.set(f.id, {
+        m: f.mimeType,
+        s: f.size ? parseInt(f.size, 10) : 0,
+        p: (f.parents || []).map(normalize),
+      });
     }
   });
+  return files;
+}
 
+// Applies a changes.list delta directly onto an existing {m,s,p} file map —
+// mutates it in place and returns the new checkpoint token to save for next
+// time. Throws INVALID_CHANGES_TOKEN if Google no longer recognizes the
+// checkpoint we had (it can expire after a long enough gap), signaling the
+// caller to fall back to a full resync.
+async function applyChanges(token, files, startPageToken, rootId) {
+  const normalize = (id) => (id === rootId ? ROOT_KEY : id);
+  let pageToken = startPageToken;
+  let newStartPageToken = null;
+  let pageCount = 0;
+
+  do {
+    const url = new URL("https://www.googleapis.com/drive/v3/changes");
+    url.searchParams.set("pageToken", pageToken);
+    url.searchParams.set("pageSize", "1000");
+    url.searchParams.set(
+      "fields",
+      "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, mimeType, size, parents, trashed))"
+    );
+    url.searchParams.set("restrictToMyDrive", "true");
+
+    let data;
+    try {
+      data = await throttled(() => fetchDriveJson(url.toString(), token));
+    } catch (e) {
+      if (e.message === "DRIVE_API_400" || e.message === "DRIVE_API_404") {
+        throw new Error("INVALID_CHANGES_TOKEN");
+      }
+      throw e;
+    }
+
+    pageCount++;
+    const changes = data.changes || [];
+    if (syncProgress) {
+      syncProgress.filesSoFar += changes.length;
+      syncProgress.pageCount = pageCount;
+    }
+    console.log(`[Drive Folder Size] changes page ${pageCount}: ${changes.length} changed item(s)`);
+
+    for (const c of changes) {
+      if (c.removed || !c.file || c.file.trashed) {
+        files.delete(c.fileId);
+        continue;
+      }
+      files.set(c.file.id, {
+        m: c.file.mimeType,
+        s: c.file.size ? parseInt(c.file.size, 10) : 0,
+        p: (c.file.parents || []).map(normalize),
+      });
+    }
+
+    pageToken = data.nextPageToken || null;
+    if (data.newStartPageToken) newStartPageToken = data.newStartPageToken;
+  } while (pageToken);
+
+  return newStartPageToken;
+}
+
+// Pure in-memory pass over the {m,s,p} file map → { totals, childFolders }.
+// Same computation whether the map came from a full listing or an
+// incremental patch — the expensive part was ever getting the map, not this.
+function computeTotals(files) {
   const totals = new Map(); // id -> {size, hasNativeDocs}
   const childFolders = new Map(); // parentId -> [folderId, ...]
   const ensureTotal = (id) => {
@@ -224,25 +303,21 @@ async function buildFullIndex(token) {
   };
   ensureTotal(ROOT_KEY);
 
-  // Build the folder->children index (folders only) directly from parents.
-  for (const [id, mime] of mimeById) {
-    if (mime !== FOLDER_MIME) continue;
-    for (const parentId of parentsById.get(id) || []) {
+  for (const [id, f] of files) {
+    if (f.m !== FOLDER_MIME) continue;
+    for (const parentId of f.p) {
       if (!childFolders.has(parentId)) childFolders.set(parentId, []);
       childFolders.get(parentId).push(id);
     }
   }
 
-  // For every non-folder file, walk its parent chain upward, adding its size
-  // to every ancestor folder's running total (a file/folder can technically
-  // have multiple parents in Drive's data model, so this can branch).
-  for (const [id, mime] of mimeById) {
-    if (mime === FOLDER_MIME) continue;
-    const size = sizeById.get(id) || 0;
-    const isNativeDoc = !sizeById.get(id) && mime && mime.startsWith("application/vnd.google-apps.");
+  for (const [id, f] of files) {
+    if (f.m === FOLDER_MIME) continue;
+    const size = f.s || 0;
+    const isNativeDoc = !f.s && f.m && f.m.startsWith("application/vnd.google-apps.");
 
     const seen = new Set();
-    const stack = [...(parentsById.get(id) || [])];
+    const stack = [...f.p];
     while (stack.length) {
       const parentId = stack.pop();
       if (seen.has(parentId)) continue;
@@ -251,31 +326,76 @@ async function buildFullIndex(token) {
       bucket.size += size;
       if (isNativeDoc) bucket.hasNativeDocs = true;
       if (parentId !== ROOT_KEY) {
-        stack.push(...(parentsById.get(parentId) || []));
+        const parentFile = files.get(parentId);
+        if (parentFile) stack.push(...parentFile.p);
       }
     }
   }
 
   return {
     totals: Object.fromEntries(totals),
-    childFolders: Object.fromEntries([...childFolders].map(([k, v]) => [k, v])),
+    childFolders: Object.fromEntries(childFolders),
   };
 }
 
-async function getIndex(token, forceRefresh) {
-  if (!forceRefresh) {
-    const stored = await browser.storage.local.get(["driveIndex", "indexSyncedAt"]);
-    if (stored.driveIndex && stored.indexSyncedAt && Date.now() - stored.indexSyncedAt < INDEX_TTL_MS) {
-      return stored.driveIndex;
-    }
+// forceCheck=true (from "Sync now") skips the 15-minute throttle but still
+// prefers an incremental check over a full resync whenever we have a base
+// to patch — a full resync should really only ever happen once.
+async function getIndex(token, forceCheck) {
+  const stored = await browser.storage.local.get(["driveFiles", "driveTotals", "changesToken", "indexSyncedAt"]);
+  const hasBase = stored.driveFiles && stored.changesToken;
+
+  if (!forceCheck && stored.driveTotals && stored.indexSyncedAt) {
+    if (Date.now() - stored.indexSyncedAt < SYNC_CHECK_INTERVAL_MS) return stored.driveTotals;
   }
   if (fullSyncInFlight) return fullSyncInFlight;
 
-  syncProgress = { filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt: Date.now() };
+  const startedAt = Date.now();
+
   fullSyncInFlight = (async () => {
-    const index = await buildFullIndex(token);
-    await browser.storage.local.set({ driveIndex: index, indexSyncedAt: Date.now() });
-    return index;
+    let files = null;
+    let changesToken;
+    let mode;
+
+    if (hasBase) {
+      mode = "incremental";
+      syncProgress = { mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
+      try {
+        const rootId = await fetchRootId(token);
+        files = new Map(Object.entries(stored.driveFiles));
+        changesToken = await applyChanges(token, files, stored.changesToken, rootId);
+      } catch (e) {
+        if (e.message !== "INVALID_CHANGES_TOKEN") throw e;
+        console.log("[Drive Folder Size] saved checkpoint is no longer valid — falling back to a full resync");
+        files = null; // fall through below
+      }
+    }
+
+    if (!files) {
+      mode = "full";
+      syncProgress = { mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
+      const rootId = await fetchRootId(token);
+      // Grab the checkpoint BEFORE listing, so the next incremental sync
+      // also catches anything that changed while this listing was running.
+      changesToken = await fetchStartPageToken(token);
+      files = await fetchAllFilesAsMap(token, rootId);
+    }
+
+    const totals = computeTotals(files);
+    const finishedAt = Date.now();
+    await browser.storage.local.set({
+      driveFiles: Object.fromEntries(files),
+      driveTotals: totals,
+      changesToken,
+      indexSyncedAt: finishedAt,
+      lastSyncMeta: {
+        mode,
+        fileCount: files.size,
+        folderCount: Object.keys(totals.totals).length,
+        durationMs: finishedAt - startedAt,
+      },
+    });
+    return totals;
   })().finally(() => {
     fullSyncInFlight = null;
     syncProgress = null;
@@ -285,7 +405,7 @@ async function getIndex(token, forceRefresh) {
 }
 
 async function clearIndex() {
-  await browser.storage.local.remove(["driveIndex", "indexSyncedAt"]);
+  await browser.storage.local.remove(["driveFiles", "driveTotals", "changesToken", "indexSyncedAt", "lastSyncMeta"]);
 }
 
 // ---------- message handling ----------
@@ -365,7 +485,9 @@ browser.runtime.onMessage.addListener((msg) => {
       })();
 
     case "SYNC_NOW":
-      // User-triggered (button click) full re-sync, ignoring the 24h cache.
+      // User-triggered (button click): forces an immediate check now instead
+      // of waiting for the 15-minute throttle. Still prefers a small
+      // incremental changes.list patch over a full resync whenever possible.
       return (async () => {
         try {
           const token = await getToken(true);
