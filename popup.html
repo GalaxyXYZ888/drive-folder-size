@@ -1,0 +1,143 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Drive Folder Size</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        width: 260px;
+        margin: 0;
+        padding: 14px;
+        font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+        font-size: 13px;
+        color: #202124;
+        background: #fff;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          color: #e8eaed;
+          background: #202124;
+        }
+        .status-note {
+          color: #9aa0a6 !important;
+        }
+        .setup-link {
+          color: #8ab4f8 !important;
+        }
+        hr {
+          border-color: #3c4043 !important;
+        }
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 12px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .label {
+        font-weight: 600;
+      }
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 38px;
+        height: 20px;
+        flex: 0 0 auto;
+      }
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background-color: #ccc;
+        transition: 0.15s;
+        border-radius: 20px;
+      }
+      .slider::before {
+        content: "";
+        position: absolute;
+        height: 16px;
+        width: 16px;
+        left: 2px;
+        bottom: 2px;
+        background-color: white;
+        transition: 0.15s;
+        border-radius: 50%;
+      }
+      input:checked + .slider {
+        background-color: #1a73e8;
+      }
+      input:checked + .slider::before {
+        transform: translateX(18px);
+      }
+      .status-note {
+        margin-top: 8px;
+        color: #5f6368;
+        line-height: 1.4;
+      }
+      hr {
+        border: none;
+        border-top: 1px solid #e0e0e0;
+        margin: 12px 0;
+      }
+      .setup-link {
+        display: inline-block;
+        color: #1a73e8;
+        text-decoration: none;
+        font-size: 13px;
+      }
+      .setup-link:hover {
+        text-decoration: underline;
+      }
+      #connStatus {
+        font-size: 12px;
+        margin-top: 6px;
+      }
+      button#reconnectBtn {
+        margin-top: 8px;
+        padding: 7px 10px;
+        border-radius: 6px;
+        border: 1px solid #1a73e8;
+        background: transparent;
+        color: #1a73e8;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      @media (prefers-color-scheme: dark) {
+        button#reconnectBtn {
+          color: #8ab4f8;
+          border-color: #8ab4f8;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Drive Folder Size</h1>
+    <div class="row">
+      <span class="label">Show folder sizes</span>
+      <label class="switch">
+        <input type="checkbox" id="enabledToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <p class="status-note" id="statusNote">
+      When on, injects recursive folder sizes into Google Drive's list view.
+    </p>
+    <div id="connStatus"></div>
+    <button id="reconnectBtn" style="display: none; width: 100%">Reconnect Google account</button>
+    <hr />
+    <a href="#" id="openOptions" class="setup-link">Set up API access →</a>
+  </body>
+  <script src="popup.js"></script>
+</html>
