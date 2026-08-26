@@ -46,7 +46,7 @@ if the snapshot is old.
   Starred, or Shared with me.
 - **Google-native files** (Docs, Sheets, Slides, Forms) don't report a byte
   size, so a folder containing them shows a slightly undercounted total.
-  Shortcuts to a regular file resolve to the target's real size; shortcuts
+  Shortcuts to a regular file resolve to the target's real size. Shortcuts
   to a native doc inherit the same caveat.
 - **Reconnecting roughly weekly**, Google's hard limit for OAuth apps left
   in Testing mode. A one-click **Reconnect** appears in the toolbar popup
@@ -77,7 +77,7 @@ release.
 ## Version history
 
 - **0.2 Beta**: First working version. Folder detection via the Drive API (not icon/DOM
-  sniffing); recursive size computed by walking the folder tree one API call per
+  sniffing). Recursive size computed by walking the folder tree one API call per
   folder. Worked, but slow on wide/deep trees and fragile against Drive's React
   re-renders (badges could revert on hover).
 - **0.3 Beta**: Rebuilt size computation around one full Drive file listing and
