@@ -142,7 +142,10 @@ function setBackupStatus(text, isError) {
 // Friendlier text for the errors someone's actually likely to hit here.
 function describeSnapshotError(error) {
   if (error === "APPDATA_SCOPE_MISSING") {
-    return 'missing Drive backup access — see the "needs a scope" note above, then reconnect.';
+    return (
+      "missing Drive backup access — add scope drive.appdata to your Cloud project's OAuth consent " +
+      'screen, then click "Disconnect" and "Connect & test" again above.'
+    );
   }
   if (error === "NOTHING_TO_EXPORT") return "nothing to export yet — sync at least once first.";
   if (error === "NO_BACKUP_FOUND") return "no backup found in Drive yet — use \"Back up\" first.";

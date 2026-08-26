@@ -142,8 +142,10 @@
       <li>
         <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank"
           >OAuth consent screen</a
-        >: choose <strong>External</strong>, add scope <code>drive.readonly</code>, add yourself as
-        a test user, leave publishing status as <strong>Testing</strong>.
+        >: choose <strong>External</strong>, add scopes <code>drive.readonly</code> and
+        <code>drive.appdata</code> (the second is only for the Drive backup in step 3 below, but
+        adding it now saves a trip back here later), add yourself as a test user, leave publishing
+        status as <strong>Testing</strong>.
       </li>
       <li>
         <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Credentials</a>
@@ -203,10 +205,8 @@
       </div>
       <p class="note">
         Stores it in a hidden folder in your own Drive instead — handy on a new computer, nothing to
-        carry over yourself. First time only: add scope <code>drive.appdata</code> on your
-        <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank"
-          >OAuth consent screen</a
-        >, then Disconnect and Connect &amp; test again above.
+        carry over yourself. Works as soon as you're connected above, as long as you added the
+        <code>drive.appdata</code> scope in step 1.
       </p>
       <p class="note" id="backupStatus"></p>
     </div>

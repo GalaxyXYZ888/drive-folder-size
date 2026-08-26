@@ -8,21 +8,21 @@ The first sync reads your whole Drive once (the slow part — a few minutes on
 a large Drive). Every sync after that only checks what changed, so it's
 near-instant.
 
-## Install (unpacked / temporary)
+## Install
 
-1. Open Firefox, go to `about:debugging#/runtime/this-firefox`.
-2. Click **Load Temporary Add-on…** and select `manifest.json` from this folder.
-3. The toolbar icon (folder + green "B" badge) should appear.
-
-Note: a temporary add-on unloads when Firefox restarts. To make it stick, see
-"Making it permanent" below.
+1. Download the latest `.xpi` from the
+   [Releases page](https://github.com/GalaxyXYZ888/drive-folder-size/releases/latest).
+2. Open it in Firefox (click the download, or drag it into a Firefox window) and click **Add**
+   when prompted.
+3. The toolbar icon should appear. It's signed and permanent — nothing else to do.
 
 ## One-time setup (Google API access)
 
 The extension talks to the Drive API directly with **your own** Google Cloud
 OAuth client — nothing routes through a third party. Click the toolbar icon →
 **Set up API access** and follow the steps there: enable the Drive API,
-configure an OAuth consent screen, create a Client ID + secret, paste both
+configure an OAuth consent screen (with the `drive.readonly` and
+`drive.appdata` scopes — see below), create a Client ID + secret, paste both
 in, and connect. Takes about 5 minutes.
 
 ## Restoring without redoing the full sync
@@ -33,8 +33,9 @@ sync. Two ways around it, both on the setup page:
 - **Export / Import**: save the index as a local JSON file you carry
   yourself.
 - **Back up / Restore to Drive**: same snapshot, stored in a hidden folder in
-  your own Drive — handy on a new computer since there's no file to carry
-  over (needs one extra one-time consent step, explained on the setup page).
+  your own Drive (`drive.appdata` scope) — handy on a new computer since
+  there's no file to carry over. Works right away as long as you added that
+  scope during setup above.
 
 Either way, the very next sync automatically catches up on anything that
 changed since — same as a normal incremental sync, just a bigger catch-up if
@@ -52,18 +53,19 @@ the snapshot is old.
   in Testing mode. A one-click **Reconnect** appears in the toolbar popup
   when it's needed; it's never triggered without a deliberate click.
 
-## Making it permanent
+## Developing
 
-Temporary add-ons disappear on Firefox restart. Options, cheapest first:
+Working on the source directly (rather than installing a release build)?
 
-- **Firefox Developer Edition or Nightly**: set `xpinstall.signatures.required`
-  to `false` in `about:config`, then install the zipped extension normally —
-  it'll persist across restarts without needing to be signed.
-- **Self-distribute a signed build**: zip this folder's contents and submit it
-  to [addons.mozilla.org](https://addons.mozilla.org/developers/) as an
-  **unlisted** add-on (free, a few minutes, no public listing, no manual
-  review queue for unlisted). Download the signed `.xpi` it gives you back and
-  install that in regular Firefox — it'll survive restarts.
+1. Open Firefox, go to `about:debugging#/runtime/this-firefox`.
+2. Click **Load Temporary Add-on…** and select `manifest.json` from this folder.
+3. It unloads on Firefox restart, and on any file change you'll need to click **Reload**
+   there to pick it up.
+
+Releases are built by zipping this folder and submitting it to
+[addons.mozilla.org](https://addons.mozilla.org/developers/) as an **unlisted** add-on — free,
+a few minutes, no public listing — then attaching the signed `.xpi` it gives back to a GitHub
+release.
 
 ## Files
 
