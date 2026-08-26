@@ -6,7 +6,7 @@ const reconnectBtn = document.getElementById("reconnectBtn");
 async function refreshConnStatus() {
   const { clientId } = await browser.storage.local.get("clientId");
   if (!clientId) {
-    connStatus.textContent = "Not set up yet — add your Client ID first.";
+    connStatus.textContent = "Not set up yet. Add your Client ID first.";
     connStatus.style.color = "#c5221f";
     reconnectBtn.style.display = "none";
     return;
@@ -29,11 +29,11 @@ async function refreshConnStatus() {
     reconnectBtn.style.display = "none";
   } else {
     // The refresh token normally renews access silently in the background,
-    // so landing here means it's gone — revoked, or (Testing-mode Cloud
+    // so landing here means it's gone: revoked, or (Testing-mode Cloud
     // projects) past its ~7-day limit. Not a bug, just needs a fresh
     // consent. One click fixes it (this button click is a real user
     // gesture, so the interactive popup can safely open here).
-    connStatus.textContent = "Signed out — badges will show \"?\" until you reconnect.";
+    connStatus.textContent = "Signed out. Badges will show \"?\" until you reconnect.";
     connStatus.style.color = "#c5221f";
     reconnectBtn.style.display = "block";
   }
