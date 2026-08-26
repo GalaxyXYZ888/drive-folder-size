@@ -67,7 +67,7 @@ function startProgressPolling() {
     const elapsedSec = Math.round((Date.now() - progress.startedAt) / 1000);
     const rateNote =
       progress.rateLimitHits > 0
-        ? ` — hit the API rate limit ${progress.rateLimitHits}× so far (see "Speeding up a slow sync" below)`
+        ? ` — hit the API rate limit ${progress.rateLimitHits}× so far`
         : "";
     const label = progress.mode === "incremental" ? "Checking for changes" : "Full sync";
     syncStatus.textContent = `${label}… ${progress.filesSoFar.toLocaleString()} items across ${progress.pageCount} page(s), ${elapsedSec}s elapsed${rateNote}.`;
