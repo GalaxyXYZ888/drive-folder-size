@@ -8,6 +8,12 @@ const clearCacheBtn = document.getElementById("clearCacheBtn");
 const disconnectBtn = document.getElementById("disconnectBtn");
 const syncNowBtn = document.getElementById("syncNowBtn");
 const syncStatus = document.getElementById("syncStatus");
+const exportBtn = document.getElementById("exportBtn");
+const importBtn = document.getElementById("importBtn");
+const importFile = document.getElementById("importFile");
+const backupDriveBtn = document.getElementById("backupDriveBtn");
+const restoreDriveBtn = document.getElementById("restoreDriveBtn");
+const backupStatus = document.getElementById("backupStatus");
 
 function setStatus(text, isError) {
   statusLine.textContent = text;
@@ -126,4 +132,85 @@ clearCacheBtn.addEventListener("click", async () => {
 disconnectBtn.addEventListener("click", async () => {
   await browser.runtime.sendMessage({ type: "DISCONNECT" });
   setStatus("Disconnected. Click \"Connect & test\" to sign in again.", false);
+});
+
+function setBackupStatus(text, isError) {
+  backupStatus.textContent = text;
+  backupStatus.style.color = isError ? "#c5221f" : "#188038";
+}
+
+// Friendlier text for the errors someone's actually likely to hit here.
+function describeSnapshotError(error) {
+  if (error === "APPDATA_SCOPE_MISSING") {
+    return 'missing Drive backup access — see the "needs a scope" note above, then reconnect.';
+  }
+  if (error === "NOTHING_TO_EXPORT") return "nothing to export yet — sync at least once first.";
+  if (error === "NO_BACKUP_FOUND") return "no backup found in Drive yet — use \"Back up\" first.";
+  if (error === "INVALID_SNAPSHOT") return "that file doesn't look like a Drive Folder Size export.";
+  return error || "unknown error";
+}
+
+exportBtn.addEventListener("click", async () => {
+  const resp = await browser.runtime.sendMessage({ type: "EXPORT_SNAPSHOT" });
+  if (!resp || !resp.ok) {
+    setBackupStatus(`Export failed: ${describeSnapshotError(resp && resp.error)}`, true);
+    return;
+  }
+  const blob = new Blob([JSON.stringify(resp.snapshot)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `drive-folder-size-index-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  setBackupStatus(`Exported ${Object.keys(resp.snapshot.driveFiles).length.toLocaleString()} files.`, false);
+});
+
+importBtn.addEventListener("click", () => importFile.click());
+
+importFile.addEventListener("change", async () => {
+  const file = importFile.files[0];
+  importFile.value = ""; // so re-selecting the same file still fires "change"
+  if (!file) return;
+  try {
+    const snapshot = JSON.parse(await file.text());
+    const resp = await browser.runtime.sendMessage({ type: "IMPORT_SNAPSHOT", snapshot });
+    if (resp && resp.ok) {
+      setBackupStatus(
+        `Imported ${resp.fileCount.toLocaleString()} files. The next sync will catch up on anything that's changed since.`,
+        false
+      );
+      await refreshSyncStatus();
+    } else {
+      setBackupStatus(`Import failed: ${describeSnapshotError(resp && resp.error)}`, true);
+    }
+  } catch (e) {
+    setBackupStatus("Import failed: that file isn't valid JSON.", true);
+  }
+});
+
+backupDriveBtn.addEventListener("click", async () => {
+  setBackupStatus("Backing up…", false);
+  const resp = await browser.runtime.sendMessage({ type: "BACKUP_TO_DRIVE" });
+  if (resp && resp.ok) {
+    setBackupStatus(`Backed up ${resp.fileCount.toLocaleString()} files to Drive.`, false);
+  } else {
+    setBackupStatus(`Backup failed: ${describeSnapshotError(resp && resp.error)}`, true);
+  }
+});
+
+restoreDriveBtn.addEventListener("click", async () => {
+  setBackupStatus("Restoring…", false);
+  const resp = await browser.runtime.sendMessage({ type: "RESTORE_FROM_DRIVE" });
+  if (resp && resp.ok) {
+    const when = resp.modifiedTime ? new Date(resp.modifiedTime).toLocaleString() : "unknown time";
+    setBackupStatus(
+      `Restored ${resp.fileCount.toLocaleString()} files from a Drive backup saved ${when}. ` +
+        "The next sync will catch up on anything new since.",
+      false
+    );
+    await refreshSyncStatus();
+  } else {
+    setBackupStatus(`Restore failed: ${describeSnapshotError(resp && resp.error)}`, true);
+  }
 });

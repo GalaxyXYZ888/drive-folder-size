@@ -25,12 +25,25 @@
 //    exchanged for a refresh token — see "auth" section below)
 //  - The full/incremental sync + in-memory folder-size computation
 //  - Answering messages from content.js / popup.js / options.js
+//  - Portable snapshots of the index (v1.2), so a reinstall or a new
+//    computer doesn't mean redoing the one-time full sync: local
+//    export/import (a JSON file you carry yourself) and an optional backup
+//    to a hidden "app data" folder in the user's own Drive (invisible in
+//    the regular Drive UI and never counted in a folder's size, since
+//    files.list only sees it when spaces=appDataFolder is asked for
+//    explicitly). Either path just seeds driveFiles+changesToken and lets
+//    the normal incremental sync catch up whatever's changed since.
 
 const SYNC_CHECK_INTERVAL_MS = 15 * 60 * 1000; // don't even check for changes more often than this
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+// drive.appdata is only needed for the Drive-backed backup/restore below;
+// existing connections need to reconnect once to pick it up (a stored
+// refresh_token keeps whatever scope it was originally granted).
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.appdata";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 const ROOT_KEY = "root"; // our internal alias for "My Drive" itself
+const APPDATA_FILENAME = "drive-folder-size-index.json";
+const SNAPSHOT_VERSION = 1;
 
 let fullSyncInFlight = null;
 
@@ -556,6 +569,100 @@ async function clearIndex() {
   await browser.storage.local.remove(["driveFiles", "driveTotals", "changesToken", "indexSyncedAt", "lastSyncMeta"]);
 }
 
+// ---------- portable snapshots (export/import, Drive appDataFolder backup) ----------
+
+async function buildSnapshot() {
+  const stored = await browser.storage.local.get(["driveFiles", "changesToken", "indexSyncedAt"]);
+  if (!stored.driveFiles || !stored.changesToken) throw new Error("NOTHING_TO_EXPORT");
+  return {
+    version: SNAPSHOT_VERSION,
+    driveFiles: stored.driveFiles,
+    changesToken: stored.changesToken,
+    indexSyncedAt: stored.indexSyncedAt,
+    savedAt: Date.now(),
+  };
+}
+
+// Seeds storage from a snapshot (however it was obtained) and recomputes
+// totals locally rather than trusting a possibly-older totals shape in the
+// file. Deliberately does NOT trigger a sync itself — the next normal
+// getIndex() call sees driveFiles+changesToken already present and takes
+// the incremental path on its own, catching up on anything that changed
+// since the snapshot was saved.
+async function applySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || !snapshot.driveFiles || !snapshot.changesToken) {
+    throw new Error("INVALID_SNAPSHOT");
+  }
+  const files = new Map(Object.entries(snapshot.driveFiles));
+  const totals = computeTotals(files);
+  await browser.storage.local.set({
+    driveFiles: snapshot.driveFiles,
+    driveTotals: totals,
+    changesToken: snapshot.changesToken,
+    indexSyncedAt: snapshot.indexSyncedAt || Date.now(),
+    lastSyncMeta: {
+      mode: "restored",
+      fileCount: files.size,
+      folderCount: Object.keys(totals.totals).length,
+      durationMs: 0,
+    },
+  });
+  return files.size;
+}
+
+// appDataFolder is a hidden per-app space files.list only sees when asked
+// for explicitly (spaces=appDataFolder) — it never shows up in the normal
+// 'me' in owners listing this extension already does, so the backup file
+// can't accidentally inflate a folder's size or clutter the user's Drive.
+// One fixed filename, updated in place, so repeated backups don't pile up.
+async function findAppDataFile(token) {
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set("spaces", "appDataFolder");
+  url.searchParams.set("q", `name = '${APPDATA_FILENAME}' and trashed = false`);
+  url.searchParams.set("fields", "files(id, modifiedTime)");
+  const data = await throttled(() => fetchDriveJson(url.toString(), token));
+  return (data.files && data.files[0]) || null;
+}
+
+async function uploadAppDataFile(token, jsonContent) {
+  const existing = await findAppDataFile(token);
+  const boundary = `dfs_${Math.random().toString(36).slice(2)}`;
+  const metadata = existing ? {} : { name: APPDATA_FILENAME, parents: ["appDataFolder"] };
+  const body =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${jsonContent}\r\n` +
+    `--${boundary}--`;
+  const url = existing
+    ? `https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=multipart`
+    : "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
+
+  const resp = await fetch(url, {
+    method: existing ? "PATCH" : "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  if (resp.status === 401) throw new Error("AUTH_EXPIRED");
+  // A token minted from a refresh_token granted before this version (readonly
+  // only) silently keeps that narrower scope — Drive returns 403 rather than
+  // failing at token-mint time, so this is the only place that's visible.
+  if (resp.status === 403) throw new Error("APPDATA_SCOPE_MISSING");
+  if (!resp.ok) throw new Error(`APPDATA_UPLOAD_${resp.status}`);
+  return resp.json();
+}
+
+async function downloadAppDataFile(token) {
+  const file = await findAppDataFile(token);
+  if (!file) throw new Error("NO_BACKUP_FOUND");
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (resp.status === 401) throw new Error("AUTH_EXPIRED");
+  if (resp.status === 403) throw new Error("APPDATA_SCOPE_MISSING");
+  if (!resp.ok) throw new Error(`APPDATA_DOWNLOAD_${resp.status}`);
+  const snapshot = JSON.parse(await resp.text());
+  return { snapshot, modifiedTime: file.modifiedTime };
+}
+
 // ---------- message handling ----------
 
 // Single call per folder navigation: returns every child folder's id AND its
@@ -657,6 +764,40 @@ browser.runtime.onMessage.addListener((msg) => {
 
     case "CLEAR_CACHE":
       return clearIndex().then(() => ({ ok: true }));
+
+    case "EXPORT_SNAPSHOT":
+      return buildSnapshot()
+        .then((snapshot) => ({ ok: true, snapshot }))
+        .catch((e) => ({ ok: false, error: e.message || "EXPORT_FAILED" }));
+
+    case "IMPORT_SNAPSHOT":
+      return applySnapshot(msg.snapshot)
+        .then((fileCount) => ({ ok: true, fileCount }))
+        .catch((e) => ({ ok: false, error: e.message || "IMPORT_FAILED" }));
+
+    case "BACKUP_TO_DRIVE":
+      return (async () => {
+        try {
+          const snapshot = await buildSnapshot();
+          const token = await getToken(true);
+          await uploadAppDataFile(token, JSON.stringify(snapshot));
+          return { ok: true, fileCount: Object.keys(snapshot.driveFiles).length };
+        } catch (e) {
+          return { ok: false, error: e.message || "BACKUP_FAILED" };
+        }
+      })();
+
+    case "RESTORE_FROM_DRIVE":
+      return (async () => {
+        try {
+          const token = await getToken(true);
+          const { snapshot, modifiedTime } = await downloadAppDataFile(token);
+          const fileCount = await applySnapshot(snapshot);
+          return { ok: true, fileCount, modifiedTime };
+        } catch (e) {
+          return { ok: false, error: e.message || "RESTORE_FAILED" };
+        }
+      })();
 
     case "DISCONNECT":
       return revokeAndClearToken().then(() => ({ ok: true }));

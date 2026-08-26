@@ -213,6 +213,47 @@
       </p>
     </div>
 
+    <h2>3. Restore without redoing the full sync</h2>
+    <p class="note">
+      The full sync only ever needs to happen once — but reinstalling this extension, or moving to a
+      new computer, normally throws that away and starts over. These skip that: whichever one you use,
+      the very next sync afterward automatically fetches only what's changed since, the same as a
+      normal incremental sync — just a bigger catch-up if the snapshot is old.
+    </p>
+    <div class="card">
+      <div>
+        <button id="exportBtn" class="secondary">Export index to file</button>
+        <button id="importBtn" class="secondary">Import index from file…</button>
+        <input type="file" id="importFile" accept="application/json" style="display: none" />
+      </div>
+      <p class="note">
+        Saves (or loads) the current index as a plain JSON file you carry yourself — USB drive, email
+        to yourself, whatever. Works on any computer, no extra setup or permissions.
+      </p>
+      <div>
+        <button id="backupDriveBtn" class="secondary">Back up index to Drive</button>
+        <button id="restoreDriveBtn" class="secondary">Restore index from Drive</button>
+      </div>
+      <p class="note">
+        Stores the same snapshot in a hidden "app data" folder in your own Drive — invisible in the
+        regular Drive UI and never counted toward any folder's size (though, like any file, it does
+        use a small slice of your Drive storage quota). Handy on a new computer: connect, then
+        restore, no file to carry over yourself. Not automatic — back up after a sync worth keeping,
+        restore right after a fresh install/reconnect.
+      </p>
+      <p class="note">
+        Needs a scope this extension didn't request before (<code>drive.appdata</code>), so it only
+        works after two one-time steps: add that scope on your Cloud project's
+        <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank"
+          >OAuth consent screen</a
+        >
+        (Edit app → Scopes → Add or remove scopes), then click "Disconnect" and "Connect &amp; test"
+        above once so the new consent actually gets granted — an existing connection keeps whatever
+        scope it was originally given.
+      </p>
+      <p class="note" id="backupStatus"></p>
+    </div>
+
     <h2>Speeding up the (one-time) full sync</h2>
     <p class="note">
       Google Drive API quotas are generous by default (12,000 requests/minute is typical) and
@@ -236,7 +277,9 @@
       Only the list view on "My Drive" and folder pages is supported (not Grid view, Recent,
       Starred, or Shared with me). Native Google Docs/Sheets/Slides/Forms don't report a byte size
       via the API, so folders containing them will show a slightly undercounted total — hover a
-      badge to see if that applies. This extension only requests read-only Drive access.
+      badge to see if that applies. This extension only requests read-only access to your Drive
+      files, plus (if you've set up the Drive backup above) read/write access to its own hidden app
+      data folder — it never has write access to your actual files or folders.
     </p>
   </body>
   <script src="options.js"></script>

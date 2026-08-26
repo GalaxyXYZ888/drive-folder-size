@@ -50,6 +50,29 @@ OAuth client — nothing routes through a third party. Click the toolbar icon �
 
 Full step-by-step with links is on the in-extension setup page (`options.html`).
 
+## Restoring without redoing the full sync
+
+The one-time full sync is the slow part, and reinstalling the extension (or
+moving to a new computer) normally throws its results away and starts over.
+The setup page has two ways around that — either seeds `storage.local` with a
+past snapshot and lets the very next sync run its normal incremental
+`changes.list` catch-up, same as if you'd just been away for a while:
+
+- **Export / Import**: saves the index as a plain JSON file you carry
+  yourself (USB drive, email to yourself, etc). Works anywhere, needs no
+  extra setup or permissions.
+- **Back up / Restore to Drive**: stores the same snapshot in a hidden "app
+  data" folder in your own Drive — invisible in the regular Drive UI, and
+  never counted toward any folder's size, since `files.list` only sees that
+  space when asked for explicitly (`spaces=appDataFolder`). Handy on a new
+  computer: connect, then restore, with no file to carry over yourself. This
+  needs the extra `drive.appdata` scope, so it requires two one-time steps:
+  add that scope on your Cloud project's OAuth consent screen, then
+  Disconnect/Connect once so the new consent actually gets granted (an
+  existing connection keeps whatever scope it was originally given). Neither
+  direction runs automatically — back up after a sync worth keeping, restore
+  right after a fresh install.
+
 ## Known limitations
 
 - **List view only** (My Drive root + folder pages). Grid view, Recent,
@@ -99,10 +122,10 @@ Temporary add-ons disappear on Firefox restart. Options, cheapest first:
 ## Files
 
 - `manifest.json` — extension manifest (MV3)
-- `background.js` — OAuth (auth-code + PKCE, refresh tokens), full + incremental (`changes.list`) sync, in-memory folder totals
+- `background.js` — OAuth (auth-code + PKCE, refresh tokens), full + incremental (`changes.list`) sync, in-memory folder totals, portable snapshots (local export/import + Drive appDataFolder backup)
 - `content.js` — injects size badges into the Drive page, hover-resistant, tracks Drive SPA navigation
 - `popup.html`/`popup.js` — on/off toggle, live sync progress, Reconnect button, link to setup
-- `options.html`/`options.js` — setup page (Client ID/secret entry, connect/test, sync now, disconnect)
+- `options.html`/`options.js` — setup page (Client ID/secret entry, connect/test, sync now, disconnect, restore)
 
 ## Version history
 
@@ -129,3 +152,8 @@ Temporary add-ons disappear on Firefox restart. Options, cheapest first:
   alongside the Client ID on the setup page — see "One-time setup" above.
   Also fixed shortcuts being counted as 0-byte native docs: a shortcut to a
   regular file now contributes its target's real size to folder totals.
+- **1.2 (Restore Improvements)** — Added a way to skip redoing the one-time
+  full sync on a reinstall or a new computer: export/import the index as a
+  local JSON file, or back it up to/restore it from a hidden folder in your
+  own Drive (`drive.appdata` scope). See "Restoring without redoing the full
+  sync" above.
