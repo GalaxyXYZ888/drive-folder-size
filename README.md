@@ -91,7 +91,7 @@ Working on the source directly ?
   exchanged for a refresh token: reconnecting drops from roughly hourly to
   roughly weekly (the hard limit Google imposes on unverified/Testing-mode
   apps), with silent renewal in between. Requires a Client Secret now, saved
-  alongside the Client ID on the setup page — see "One-time setup" above.
+  alongside the Client ID on the setup page see "One-time setup" above.
   Also fixed shortcuts being counted as 0-byte native docs: a shortcut to a
   regular file now contributes its target's real size to folder totals.
 - **1.2 (Restore Improvements)** — Added a way to skip redoing the one-time
