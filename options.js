@@ -163,7 +163,8 @@ exportBtn.addEventListener("click", async () => {
   a.download = `drive-folder-size-index-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
-  setBackupStatus(`Exported ${Object.keys(resp.snapshot.driveFiles).length.toLocaleString()} files.`, false);
+  const fileCount = Object.keys(resp.snapshot.driveFiles).length.toLocaleString();
+  setBackupStatus(`Exported index (covers ${fileCount} files) to a file.`, false);
 });
 
 importBtn.addEventListener("click", () => importFile.click());
@@ -177,7 +178,8 @@ importFile.addEventListener("change", async () => {
     const resp = await browser.runtime.sendMessage({ type: "IMPORT_SNAPSHOT", snapshot });
     if (resp && resp.ok) {
       setBackupStatus(
-        `Imported ${resp.fileCount.toLocaleString()} files. The next sync will catch up on anything that's changed since.`,
+        `Imported index (covers ${resp.fileCount.toLocaleString()} files). ` +
+          "The next sync will catch up on anything that's changed since.",
         false
       );
       await refreshSyncStatus();
@@ -193,7 +195,7 @@ backupDriveBtn.addEventListener("click", async () => {
   setBackupStatus("Backing up…", false);
   const resp = await browser.runtime.sendMessage({ type: "BACKUP_TO_DRIVE" });
   if (resp && resp.ok) {
-    setBackupStatus(`Backed up ${resp.fileCount.toLocaleString()} files to Drive.`, false);
+    setBackupStatus(`Backed up index (covers ${resp.fileCount.toLocaleString()} files) to Drive.`, false);
   } else {
     setBackupStatus(`Backup failed: ${describeSnapshotError(resp && resp.error)}`, true);
   }
@@ -205,7 +207,7 @@ restoreDriveBtn.addEventListener("click", async () => {
   if (resp && resp.ok) {
     const when = resp.modifiedTime ? new Date(resp.modifiedTime).toLocaleString() : "unknown time";
     setBackupStatus(
-      `Restored ${resp.fileCount.toLocaleString()} files from a Drive backup saved ${when}. ` +
+      `Restored index (covers ${resp.fileCount.toLocaleString()} files) from a Drive backup saved ${when}. ` +
         "The next sync will catch up on anything new since.",
       false
     );
