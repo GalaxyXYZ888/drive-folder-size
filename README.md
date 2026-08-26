@@ -44,7 +44,8 @@ OAuth client — nothing routes through a third party. Click the toolbar icon �
    it's just for your own account).
 3. Create an OAuth Client ID (type: **Web application**), and add the redirect
    URI shown on the setup page to "Authorized redirect URIs".
-4. Paste the Client ID into the setup page, click **Connect & test**.
+4. Paste both the Client ID and Client secret into the setup page, click
+   **Connect & test**.
 5. Flip the toggle on in the popup.
 
 Full step-by-step with links is on the in-extension setup page (`options.html`).
@@ -56,13 +57,17 @@ Full step-by-step with links is on the in-extension setup page (`options.html`).
 - **Google-native files** (Docs, Sheets, Slides, Forms) don't report a byte
   size via the API, so a folder containing them will show a slightly
   undercounted total. Hover a size badge — it says so when this applies.
-- **Tokens expire roughly hourly.** Silent refresh is attempted automatically;
-  if it fails (Firefox's auth flow doesn't always have your Google session
-  available) badges will show "?" and the toolbar popup will show a one-click
-  **Reconnect** button. Content-script-triggered code never pops an
-  interactive sign-in window on its own (unrequested popups get blocked
-  anyway, and it'd be a bad surprise) — reconnecting is always a deliberate
-  click.
+  Shortcuts to a native doc inherit the same caveat; shortcuts to a regular
+  file are resolved to the target's real size instead of counting as 0.
+- **Access tokens expire roughly hourly, but a refresh token renews them
+  silently** — no popup, no click, most of the time. While your Cloud
+  project's OAuth consent screen is in **Testing** mode, Google still expires
+  that refresh token after about 7 days (its hard limit for unverified apps),
+  so roughly weekly — not hourly — you'll see badges show "?" and the
+  toolbar popup offer a one-click **Reconnect**. Content-script-triggered
+  code never pops an interactive sign-in window on its own (unrequested
+  popups get blocked anyway, and it'd be a bad surprise) — reconnecting is
+  always a deliberate click.
 - **DOM selectors are best-effort.** Google ships Drive updates that rename
   internal (minified) CSS classes fairly often. This extension deliberately
   avoids depending on those — it identifies folders via the Drive API, not
@@ -94,10 +99,10 @@ Temporary add-ons disappear on Firefox restart. Options, cheapest first:
 ## Files
 
 - `manifest.json` — extension manifest (MV3)
-- `background.js` — OAuth, full + incremental (`changes.list`) sync, in-memory folder totals
+- `background.js` — OAuth (auth-code + PKCE, refresh tokens), full + incremental (`changes.list`) sync, in-memory folder totals
 - `content.js` — injects size badges into the Drive page, hover-resistant, tracks Drive SPA navigation
 - `popup.html`/`popup.js` — on/off toggle, live sync progress, Reconnect button, link to setup
-- `options.html`/`options.js` — setup page (Client ID entry, connect/test, sync now, disconnect)
+- `options.html`/`options.js` — setup page (Client ID/secret entry, connect/test, sync now, disconnect)
 
 ## Version history
 
@@ -117,3 +122,10 @@ Temporary add-ons disappear on Firefox restart. Options, cheapest first:
   visiting Computers (or Recent/Starred) and returning to My Drive wouldn't
   refresh badges until manually re-entering the folder.
 - **1.0** — Approved AMO first version.
+- **1.1** — Replaced the implicit OAuth flow with authorization-code + PKCE,
+  exchanged for a refresh token: reconnecting drops from roughly hourly to
+  roughly weekly (the hard limit Google imposes on unverified/Testing-mode
+  apps), with silent renewal in between. Requires a Client Secret now, saved
+  alongside the Client ID on the setup page — see "One-time setup" above.
+  Also fixed shortcuts being counted as 0-byte native docs: a shortcut to a
+  regular file now contributes its target's real size to folder totals.

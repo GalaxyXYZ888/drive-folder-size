@@ -28,9 +28,10 @@ async function refreshConnStatus() {
     connStatus.textContent = "";
     reconnectBtn.style.display = "none";
   } else {
-    // Tokens expire roughly hourly and Firefox's silent-refresh doesn't
-    // always have a session to reuse, so this is an expected, normal state
-    // — not a bug. One click fixes it (this button click is a real user
+    // The refresh token normally renews access silently in the background,
+    // so landing here means it's gone — revoked, or (Testing-mode Cloud
+    // projects) past its ~7-day limit. Not a bug, just needs a fresh
+    // consent. One click fixes it (this button click is a real user
     // gesture, so the interactive popup can safely open here).
     connStatus.textContent = "Signed out — badges will show \"?\" until you reconnect.";
     connStatus.style.color = "#c5221f";

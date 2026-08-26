@@ -1,4 +1,5 @@
 const clientIdInput = document.getElementById("clientId");
+const clientSecretInput = document.getElementById("clientSecret");
 const saveBtn = document.getElementById("saveBtn");
 const connectBtn = document.getElementById("connectBtn");
 const statusLine = document.getElementById("statusLine");
@@ -69,29 +70,32 @@ function startProgressPolling() {
 
 (async () => {
   redirectUriBox.textContent = browser.identity.getRedirectURL();
-  const { clientId } = await browser.storage.local.get("clientId");
+  const { clientId, clientSecret } = await browser.storage.local.get(["clientId", "clientSecret"]);
   if (clientId) clientIdInput.value = clientId;
+  if (clientSecret) clientSecretInput.value = clientSecret;
   await refreshSyncStatus();
   startProgressPolling();
 })();
 
 saveBtn.addEventListener("click", async () => {
-  const value = clientIdInput.value.trim();
-  if (!value) {
-    setStatus("Enter a Client ID first.", true);
+  const clientId = clientIdInput.value.trim();
+  const clientSecret = clientSecretInput.value.trim();
+  if (!clientId || !clientSecret) {
+    setStatus("Enter both the Client ID and Client secret first.", true);
     return;
   }
-  await browser.storage.local.set({ clientId: value });
+  await browser.storage.local.set({ clientId, clientSecret });
   setStatus("Saved.", false);
 });
 
 connectBtn.addEventListener("click", async () => {
-  const value = clientIdInput.value.trim();
-  if (!value) {
-    setStatus("Enter and save a Client ID first.", true);
+  const clientId = clientIdInput.value.trim();
+  const clientSecret = clientSecretInput.value.trim();
+  if (!clientId || !clientSecret) {
+    setStatus("Enter and save both the Client ID and Client secret first.", true);
     return;
   }
-  await browser.storage.local.set({ clientId: value });
+  await browser.storage.local.set({ clientId, clientSecret });
   setStatus("Opening Google sign-in…", false);
   const resp = await browser.runtime.sendMessage({ type: "TEST_CONNECTION" });
   if (resp && resp.ok) {

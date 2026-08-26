@@ -21,13 +21,15 @@
 //     checkpoint token (rare; we detect it and fall back automatically).
 //
 // Responsibilities:
-//  - OAuth (implicit flow via browser.identity.launchWebAuthFlow, no client secret needed)
+//  - OAuth (authorization-code + PKCE via browser.identity.launchWebAuthFlow,
+//    exchanged for a refresh token — see "auth" section below)
 //  - The full/incremental sync + in-memory folder-size computation
 //  - Answering messages from content.js / popup.js / options.js
 
 const SYNC_CHECK_INTERVAL_MS = 15 * 60 * 1000; // don't even check for changes more often than this
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 const ROOT_KEY = "root"; // our internal alias for "My Drive" itself
 
 let fullSyncInFlight = null;
@@ -53,6 +55,30 @@ async function setSetting(key, value) {
 }
 
 // ---------- auth ----------
+//
+// Authorization-code flow + PKCE, not the old implicit flow. The point is
+// the refresh_token this gets us: implicit-flow access tokens die in ~1hr
+// with nothing to silently renew them from, so every hour the user had to
+// click through an interactive Google sign-in again. A refresh_token lets
+// getToken() mint a new access token with a plain background fetch — no
+// popup, no user gesture — so reconnecting becomes rare instead of hourly.
+//
+// This still needs no third-party server: the code exchange and refresh
+// calls go straight from this extension to Google's token endpoint. It does
+// need a client secret, unlike the old flow — Google's token endpoint
+// requires one for "Web application" type OAuth clients regardless of PKCE
+// (only Desktop/TV/mobile client types skip it, and none of those support
+// the https:// redirect URI Firefox's identity API hands us). That secret
+// belongs to a Google Cloud project the user creates and owns; it isn't a
+// value we ship, so "no third party sees your data" still holds. See the
+// setup page for where the user gets one.
+//
+// Caveat worth knowing: while the Cloud project's OAuth consent screen is
+// in "Testing" mode (the setup page has users stay there to skip Google's
+// verification review), Google expires refresh tokens after 7 days no
+// matter what. So this doesn't make reconnecting go away entirely — it goes
+// from "every ~1 hour" to "every ~7 days", which is the best available
+// without asking the user to submit their project for verification.
 
 async function getClientId() {
   const clientId = await getSetting("clientId");
@@ -60,54 +86,153 @@ async function getClientId() {
   return clientId;
 }
 
+async function getClientSecret() {
+  const clientSecret = await getSetting("clientSecret");
+  if (!clientSecret) throw new Error("NO_CLIENT_SECRET");
+  return clientSecret;
+}
+
+function base64UrlEncode(buffer) {
+  let binary = "";
+  for (const byte of new Uint8Array(buffer)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function generateCodeVerifier() {
+  const bytes = new Uint8Array(64);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes.buffer);
+}
+
+async function generateCodeChallenge(verifier) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return base64UrlEncode(digest);
+}
+
+async function callTokenEndpoint(params) {
+  const resp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(params).toString(),
+  });
+  if (!resp.ok) throw new Error(`TOKEN_ENDPOINT_${resp.status}`);
+  return resp.json();
+}
+
+async function storeAccessToken(tokens) {
+  await browser.storage.local.set({
+    authToken: tokens.access_token,
+    authTokenExpiry: Date.now() + tokens.expires_in * 1000 - 60000, // refresh a minute early
+  });
+}
+
+// interactive=false (content scripts, background polling) must NEVER pop an
+// OAuth window — no user gesture behind those calls, and browsers block or
+// misbehave on popups not tied to a click. It can still succeed silently via
+// a stored refresh_token. interactive=true (a real button click) is allowed
+// to fall back to the consent screen when there's no usable refresh_token.
 async function getToken(interactive) {
-  const stored = await browser.storage.local.get(["authToken", "authTokenExpiry"]);
+  const stored = await browser.storage.local.get(["authToken", "authTokenExpiry", "refreshToken"]);
   if (stored.authToken && stored.authTokenExpiry && Date.now() < stored.authTokenExpiry) {
     return stored.authToken;
   }
 
   const clientId = await getClientId();
+
+  if (stored.refreshToken) {
+    try {
+      const clientSecret = await getClientSecret();
+      const tokens = await callTokenEndpoint({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: stored.refreshToken,
+        grant_type: "refresh_token",
+      });
+      await storeAccessToken(tokens);
+      return tokens.access_token;
+    } catch (e) {
+      // Revoked, or expired (Testing-mode apps: after 7 days) — drop it and
+      // fall through to a fresh interactive consent if one is allowed.
+      await browser.storage.local.remove(["refreshToken"]);
+      if (!interactive) throw new Error("SILENT_AUTH_FAILED");
+    }
+  } else if (!interactive) {
+    throw new Error("SILENT_AUTH_FAILED");
+  }
+
+  const clientSecret = await getClientSecret();
   const redirectUri = browser.identity.getRedirectURL();
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = await generateCodeChallenge(codeVerifier);
 
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.searchParams.set("client_id", clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("response_type", "token");
+  authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("scope", DRIVE_SCOPE);
-  authUrl.searchParams.set("prompt", interactive ? "consent" : "none");
+  authUrl.searchParams.set("access_type", "offline"); // required for Google to issue a refresh_token at all
+  // Forces the consent screen (and a fresh refresh_token) every time —
+  // Google only hands one back on a user's FIRST consent otherwise, which
+  // would leave us stuck if theirs had already expired or been revoked.
+  authUrl.searchParams.set("prompt", "consent");
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
 
   let redirectResult;
   try {
     redirectResult = await browser.identity.launchWebAuthFlow({
       url: authUrl.toString(),
-      interactive: !!interactive,
+      interactive: true,
     });
   } catch (err) {
-    throw new Error(interactive ? "AUTH_FAILED" : "SILENT_AUTH_FAILED");
+    throw new Error("AUTH_FAILED");
   }
 
-  const hash = new URL(redirectResult).hash.slice(1);
-  const params = new URLSearchParams(hash);
-  const token = params.get("access_token");
-  const expiresIn = parseInt(params.get("expires_in") || "3600", 10);
-  if (!token) throw new Error("NO_TOKEN_IN_RESPONSE");
+  const code = new URL(redirectResult).searchParams.get("code");
+  if (!code) throw new Error("NO_CODE_IN_RESPONSE");
 
-  await browser.storage.local.set({
-    authToken: token,
-    authTokenExpiry: Date.now() + expiresIn * 1000 - 60000, // refresh a minute early
+  const tokens = await callTokenEndpoint({
+    client_id: clientId,
+    client_secret: clientSecret,
+    code,
+    code_verifier: codeVerifier,
+    grant_type: "authorization_code",
+    redirect_uri: redirectUri,
   });
-  return token;
+  if (!tokens.access_token) throw new Error("NO_TOKEN_IN_RESPONSE");
+
+  await storeAccessToken(tokens);
+  if (tokens.refresh_token) await browser.storage.local.set({ refreshToken: tokens.refresh_token });
+  return tokens.access_token;
 }
 
 async function clearToken() {
   await browser.storage.local.remove(["authToken", "authTokenExpiry"]);
 }
 
+// Also revokes the refresh_token server-side (best-effort) so "Disconnect"
+// actually disconnects, rather than leaving a live refresh_token behind that
+// would silently reauthorize the next sync.
+async function revokeAndClearToken() {
+  const { refreshToken } = await browser.storage.local.get("refreshToken");
+  if (refreshToken) {
+    try {
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(refreshToken)}`, {
+        method: "POST",
+      });
+    } catch (e) {
+      // best-effort — still clear it locally below either way
+    }
+  }
+  await browser.storage.local.remove(["authToken", "authTokenExpiry", "refreshToken"]);
+}
+
 // Content-script-triggered calls have no user gesture behind them, so they
 // must NEVER fall back to an interactive OAuth popup (browsers block or
 // misbehave on popups not tied to a click, and it'd be a confusing surprise
 // popup anyway). Silent-only; caller gets a clear AUTH_REQUIRED error and the
-// popup/options page is where the user explicitly reconnects.
+// popup/options page is where the user explicitly reconnects. With a stored
+// refresh_token this succeeds silently far more often than it used to.
 async function getSilentToken() {
   try {
     return await getToken(false);
@@ -188,7 +313,7 @@ async function fetchAllFiles(token, onPage) {
     // shared-with-me files that happen to be visible but aren't really
     // "yours" for folder-size purposes.
     url.searchParams.set("q", "trashed = false and 'me' in owners");
-    url.searchParams.set("fields", "nextPageToken, files(id, mimeType, size, parents)");
+    url.searchParams.set("fields", "nextPageToken, files(id, mimeType, size, parents, shortcutDetails(targetId))");
     url.searchParams.set("pageSize", "1000");
     url.searchParams.set("spaces", "drive");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
@@ -215,19 +340,29 @@ async function fetchStartPageToken(token) {
   return data.startPageToken;
 }
 
-// Full listing, but building the same compact {m,s,p} shape we persist —
-// short keys because this gets JSON-stringified as a whole and can run into
-// the hundreds of thousands of entries.
+// Builds the compact {m,s,p[,t]} shape we persist for one file — short keys
+// because this gets JSON-stringified as a whole and can run into the
+// hundreds of thousands of entries. `t` (shortcut target id) is present only
+// for shortcuts, so it costs nothing for the overwhelming majority of files.
+function toFileEntry(f, normalize) {
+  const entry = {
+    m: f.mimeType,
+    s: f.size ? parseInt(f.size, 10) : 0,
+    p: (f.parents || []).map(normalize),
+  };
+  if (f.mimeType === SHORTCUT_MIME && f.shortcutDetails && f.shortcutDetails.targetId) {
+    entry.t = f.shortcutDetails.targetId;
+  }
+  return entry;
+}
+
+// Full listing, using the same compact shape.
 async function fetchAllFilesAsMap(token, rootId) {
   const normalize = (id) => (id === rootId ? ROOT_KEY : id);
-  const files = new Map(); // id -> {m: mimeType, s: size, p: [parentId,...]}
+  const files = new Map();
   await fetchAllFiles(token, (page) => {
     for (const f of page) {
-      files.set(f.id, {
-        m: f.mimeType,
-        s: f.size ? parseInt(f.size, 10) : 0,
-        p: (f.parents || []).map(normalize),
-      });
+      files.set(f.id, toFileEntry(f, normalize));
     }
   });
   return files;
@@ -250,7 +385,7 @@ async function applyChanges(token, files, startPageToken, rootId) {
     url.searchParams.set("pageSize", "1000");
     url.searchParams.set(
       "fields",
-      "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, mimeType, size, parents, trashed))"
+      "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, mimeType, size, parents, trashed, shortcutDetails(targetId)))"
     );
     url.searchParams.set("restrictToMyDrive", "true");
 
@@ -277,11 +412,7 @@ async function applyChanges(token, files, startPageToken, rootId) {
         files.delete(c.fileId);
         continue;
       }
-      files.set(c.file.id, {
-        m: c.file.mimeType,
-        s: c.file.size ? parseInt(c.file.size, 10) : 0,
-        p: (c.file.parents || []).map(normalize),
-      });
+      files.set(c.file.id, toFileEntry(c.file, normalize));
     }
 
     pageToken = data.nextPageToken || null;
@@ -289,6 +420,24 @@ async function applyChanges(token, files, startPageToken, rootId) {
   } while (pageToken);
 
   return newStartPageToken;
+}
+
+// A shortcut's own file object always reports size 0 — the bytes live on
+// its target, not the shortcut. Since we already have every owned file in
+// `files`, look the target up there instead of undercounting it to 0. Only
+// resolves one hop (a shortcut pointing at another shortcut is vanishingly
+// rare and not worth chasing), and only when the target is itself a plain
+// file we own — a shortcut to a folder isn't a parent/child edge in
+// `childFolders`, so there's no recursive total to attribute here anyway.
+function resolveSize(f, files) {
+  if (f.m !== SHORTCUT_MIME || !f.t) {
+    return { size: f.s || 0, isNativeDoc: !f.s && f.m && f.m.startsWith("application/vnd.google-apps.") };
+  }
+  const target = files.get(f.t);
+  if (!target || target.m === FOLDER_MIME || target.m === SHORTCUT_MIME) {
+    return { size: 0, isNativeDoc: false };
+  }
+  return { size: target.s || 0, isNativeDoc: !target.s && target.m.startsWith("application/vnd.google-apps.") };
 }
 
 // Pure in-memory pass over the {m,s,p} file map → { totals, childFolders }.
@@ -313,8 +462,7 @@ function computeTotals(files) {
 
   for (const [id, f] of files) {
     if (f.m === FOLDER_MIME) continue;
-    const size = f.s || 0;
-    const isNativeDoc = !f.s && f.m && f.m.startsWith("application/vnd.google-apps.");
+    const { size, isNativeDoc } = resolveSize(f, files);
 
     const seen = new Set();
     const stack = [...f.p];
@@ -469,10 +617,18 @@ browser.runtime.onMessage.addListener((msg) => {
 
     case "TEST_CONNECTION":
       // Only ever called from a real button click (options/popup), so an
-      // interactive popup here is expected and won't be blocked.
+      // interactive popup is allowed here — but only fall back to one when a
+      // stored refresh_token can't silently produce a token on its own,
+      // otherwise every "test connection" click would force a fresh consent
+      // screen even for an already-connected user.
       return (async () => {
         try {
-          const token = await getToken(true);
+          let token;
+          try {
+            token = await getToken(false);
+          } catch (e) {
+            token = await getToken(true);
+          }
           const resp = await fetch("https://www.googleapis.com/drive/v3/about?fields=user", {
             headers: { Authorization: `Bearer ${token}` },
           });
@@ -503,7 +659,7 @@ browser.runtime.onMessage.addListener((msg) => {
       return clearIndex().then(() => ({ ok: true }));
 
     case "DISCONNECT":
-      return clearToken().then(() => ({ ok: true }));
+      return revokeAndClearToken().then(() => ({ ok: true }));
 
     default:
       return undefined;

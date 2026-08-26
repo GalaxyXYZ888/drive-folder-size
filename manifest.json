@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Drive Folder Size",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Shows recursive folder sizes inline in Google Drive's list view. Toggle on/off from the toolbar icon.",
   "browser_specific_settings": {
     "gecko": {
@@ -20,7 +20,8 @@
   },
   "permissions": ["identity", "storage", "unlimitedStorage"],
   "host_permissions": [
-    "https://www.googleapis.com/*"
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*"
   ],
   "background": {
     "scripts": ["background.js"],
