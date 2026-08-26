@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Drive Folder Size — Setup</title>
+    <title>Drive Folder Size: Setup</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -125,9 +125,9 @@
     </style>
   </head>
   <body>
-    <h1>Drive Folder Size — setup</h1>
+    <h1>Drive Folder Size: setup</h1>
     <p>
-      This extension talks to Google Drive using your <em>own</em> Google Cloud credentials —
+      This extension talks to Google Drive using your <em>own</em> Google Cloud credentials, so
       nothing goes through a third-party server. Takes about 5 minutes, once.
     </p>
 
@@ -170,8 +170,8 @@
 
     <h2>2. Sync</h2>
     <p class="note">
-      The first sync reads your whole Drive once — a few minutes if you have a lot of files, that's
-      normal. Every sync after that only checks what changed, so it's near-instant.
+      The first sync reads your whole Drive once (a few minutes if you have a lot of files, that's
+      normal). Every sync after that only checks what changed, so it's near-instant.
     </p>
     <div class="card">
       <button id="syncNowBtn">Sync now</button>
@@ -179,7 +179,7 @@
       <button id="disconnectBtn" class="danger">Disconnect Google account</button>
       <p class="note" id="syncStatus"></p>
       <p class="note">
-        "Sync now" checks immediately instead of waiting. "Clear cache" forces a full resync — only
+        "Sync now" checks immediately instead of waiting. "Clear cache" forces a full resync, only
         needed if numbers look structurally wrong, not just stale. You'll need to reconnect roughly
         weekly (Google's limit for apps in Testing mode); a one-click "Reconnect" shows up in the
         toolbar popup when that happens.
@@ -189,7 +189,7 @@
     <h2>3. Restore without a full resync</h2>
     <p class="note">
       Reinstalling, or moving to a new computer, normally means redoing the full sync. Skip that
-      with a saved snapshot instead — either option below just needs a quick catch-up sync
+      with a saved snapshot instead: either option below just needs a quick catch-up sync
       afterward, not a full one.
     </p>
     <div class="card">
@@ -204,8 +204,8 @@
         <button id="restoreDriveBtn" class="secondary">Restore index from Drive</button>
       </div>
       <p class="note">
-        Stores it in a hidden folder in your own Drive instead — handy on a new computer, nothing to
-        carry over yourself. Works as soon as you're connected above, as long as you added the
+        Stores it in a hidden folder in your own Drive instead, handy on a new computer with
+        nothing to carry over yourself. Works as soon as you're connected above, as long as you added the
         <code>drive.appdata</code> scope in step 1.
       </p>
       <p class="note" id="backupStatus"></p>
@@ -215,7 +215,7 @@
     <p class="note">
       Works on My Drive's list view only (not Grid view, Recent, Starred, or Shared with me). Google
       Docs/Sheets/Slides don't report a byte size, so totals including them are slightly
-      undercounted — hover a badge to check. Read-only access to your files; the Drive backup above
+      undercounted. Hover a badge to check. Read-only access to your files; the Drive backup above
       additionally needs write access to its own hidden folder, never to your actual files.
     </p>
   </body>

@@ -1,28 +1,29 @@
-// Drive Folder Size — background script
+// Drive Folder Size: background script
 //
 // Architecture (v0.3): a folder's recursive size is computed as plain
 // in-memory arithmetic over a locally-held copy of every file's
-// id/size/mimeType/parents — walk each file's parent chain, add its size to
+// id/size/mimeType/parents: walk each file's parent chain, add its size to
 // every ancestor. No per-folder network calls, ever.
 //
 // Getting that local copy has two paths:
 //   - FULL sync (v0.2): fetch every file, paginated at 1000/page. For a
 //     Drive with hundreds of thousands of files this is inherently a lot of
-//     sequential round-trips — Drive's pagination requires each page's token
-//     before the next page can be requested, so this can't be parallelized
-//     away, and it's close to a hard floor imposed by the API itself.
+//     sequential round-trips, since Drive's pagination requires each page's
+//     token before the next page can be requested, so this can't be
+//     parallelized away, and it's close to a hard floor imposed by the API
+//     itself.
 //   - INCREMENTAL sync (v0.3, new): after any full sync, we hold onto a
 //     Drive "changes" API checkpoint token. Every sync after that calls
 //     changes.list with that token and gets back only what's actually
-//     different since last time (usually a handful of files, one request) —
-//     this is the same mechanism Google's own Drive desktop client uses to
+//     different since last time (usually a handful of files, one request).
+//     This is the same mechanism Google's own Drive desktop client uses to
 //     avoid re-scanning everything on every refresh. A full resync only
 //     happens once (first install) or if Google invalidates an old
 //     checkpoint token (rare; we detect it and fall back automatically).
 //
 // Responsibilities:
 //  - OAuth (authorization-code + PKCE via browser.identity.launchWebAuthFlow,
-//    exchanged for a refresh token — see "auth" section below)
+//    exchanged for a refresh token; see "auth" section below)
 //  - The full/incremental sync + in-memory folder-size computation
 //  - Answering messages from content.js / popup.js / options.js
 //  - Portable snapshots of the index (v1.2), so a reinstall or a new
@@ -51,7 +52,7 @@ browser.runtime.onInstalled.addListener(async () => {
   const { enabled } = await browser.storage.local.get("enabled");
   if (enabled === undefined) {
     // Off by default until the user has set up a Client ID and flips the
-    // popup toggle — avoids error badges everywhere on first install.
+    // popup toggle: avoids error badges everywhere on first install.
     await browser.storage.local.set({ enabled: false });
   }
 });
@@ -73,12 +74,12 @@ async function setSetting(key, value) {
 // the refresh_token this gets us: implicit-flow access tokens die in ~1hr
 // with nothing to silently renew them from, so every hour the user had to
 // click through an interactive Google sign-in again. A refresh_token lets
-// getToken() mint a new access token with a plain background fetch — no
-// popup, no user gesture — so reconnecting becomes rare instead of hourly.
+// getToken() mint a new access token with a plain background fetch, no
+// popup, no user gesture, so reconnecting becomes rare instead of hourly.
 //
 // This still needs no third-party server: the code exchange and refresh
 // calls go straight from this extension to Google's token endpoint. It does
-// need a client secret, unlike the old flow — Google's token endpoint
+// need a client secret, unlike the old flow: Google's token endpoint
 // requires one for "Web application" type OAuth clients regardless of PKCE
 // (only Desktop/TV/mobile client types skip it, and none of those support
 // the https:// redirect URI Firefox's identity API hands us). That secret
@@ -89,7 +90,7 @@ async function setSetting(key, value) {
 // Caveat worth knowing: while the Cloud project's OAuth consent screen is
 // in "Testing" mode (the setup page has users stay there to skip Google's
 // verification review), Google expires refresh tokens after 7 days no
-// matter what. So this doesn't make reconnecting go away entirely — it goes
+// matter what. So this doesn't make reconnecting go away entirely; it goes
 // from "every ~1 hour" to "every ~7 days", which is the best available
 // without asking the user to submit their project for verification.
 
@@ -140,7 +141,7 @@ async function storeAccessToken(tokens) {
 }
 
 // interactive=false (content scripts, background polling) must NEVER pop an
-// OAuth window — no user gesture behind those calls, and browsers block or
+// OAuth window: no user gesture behind those calls, and browsers block or
 // misbehave on popups not tied to a click. It can still succeed silently via
 // a stored refresh_token. interactive=true (a real button click) is allowed
 // to fall back to the consent screen when there's no usable refresh_token.
@@ -164,7 +165,7 @@ async function getToken(interactive) {
       await storeAccessToken(tokens);
       return tokens.access_token;
     } catch (e) {
-      // Revoked, or expired (Testing-mode apps: after 7 days) — drop it and
+      // Revoked, or expired (Testing-mode apps: after 7 days), so drop it and
       // fall through to a fresh interactive consent if one is allowed.
       await browser.storage.local.remove(["refreshToken"]);
       if (!interactive) throw new Error("SILENT_AUTH_FAILED");
@@ -184,7 +185,7 @@ async function getToken(interactive) {
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("scope", DRIVE_SCOPE);
   authUrl.searchParams.set("access_type", "offline"); // required for Google to issue a refresh_token at all
-  // Forces the consent screen (and a fresh refresh_token) every time —
+  // Forces the consent screen (and a fresh refresh_token) every time:
   // Google only hands one back on a user's FIRST consent otherwise, which
   // would leave us stuck if theirs had already expired or been revoked.
   authUrl.searchParams.set("prompt", "consent");
@@ -234,7 +235,7 @@ async function revokeAndClearToken() {
         method: "POST",
       });
     } catch (e) {
-      // best-effort — still clear it locally below either way
+      // best-effort, still clear it locally below either way
     }
   }
   await browser.storage.local.remove(["authToken", "authTokenExpiry", "refreshToken"]);
@@ -279,7 +280,7 @@ function throttled(task) {
   });
 }
 
-// Visible while a sync is running — polled by popup.js/options.js so "is
+// Visible while a sync is running; polled by popup.js/options.js so "is
 // this actually working or just stuck?" has a real answer instead of a
 // static "Syncing…" label. Also logged to the background console (inspect
 // it via about:debugging → this extension → Inspect) so a slow sync's cause
@@ -296,8 +297,8 @@ async function fetchDriveJson(url, token, attempt = 0) {
     if (attempt >= 4) throw new Error("RATE_LIMITED_OR_FORBIDDEN");
     const delay = 300 * 2 ** attempt + Math.random() * 200;
     console.log(
-      `[Drive Folder Size] HTTP ${resp.status} — backing off ${Math.round(delay)}ms (attempt ${attempt + 1}/5). ` +
-        `If this keeps happening, your Google Cloud project's Drive API quota is probably too low — see the setup page.`
+      `[Drive Folder Size] HTTP ${resp.status}, backing off ${Math.round(delay)}ms (attempt ${attempt + 1}/5). ` +
+        `If this keeps happening, your Google Cloud project's Drive API quota is probably too low. See the setup page.`
     );
     await new Promise((r) => setTimeout(r, delay));
     return fetchDriveJson(url, token, attempt + 1);
@@ -321,7 +322,7 @@ async function fetchAllFiles(token, onPage) {
   let pageCount = 0;
   do {
     const url = new URL("https://www.googleapis.com/drive/v3/files");
-    // 'me' in owners keeps this scoped to your own My Drive content — not
+    // 'me' in owners keeps this scoped to your own My Drive content, not
     // shared-drive items (already excluded by default) and not stray
     // shared-with-me files that happen to be visible but aren't really
     // "yours" for folder-size purposes.
@@ -353,7 +354,7 @@ async function fetchStartPageToken(token) {
   return data.startPageToken;
 }
 
-// Builds the compact {m,s,p[,t]} shape we persist for one file — short keys
+// Builds the compact {m,s,p[,t]} shape we persist for one file: short keys
 // because this gets JSON-stringified as a whole and can run into the
 // hundreds of thousands of entries. `t` (shortcut target id) is present only
 // for shortcuts, so it costs nothing for the overwhelming majority of files.
@@ -381,7 +382,7 @@ async function fetchAllFilesAsMap(token, rootId) {
   return files;
 }
 
-// Applies a changes.list delta directly onto an existing {m,s,p} file map —
+// Applies a changes.list delta directly onto an existing {m,s,p} file map:
 // mutates it in place and returns the new checkpoint token to save for next
 // time. Throws INVALID_CHANGES_TOKEN if Google no longer recognizes the
 // checkpoint we had (it can expire after a long enough gap), signaling the
@@ -435,12 +436,12 @@ async function applyChanges(token, files, startPageToken, rootId) {
   return newStartPageToken;
 }
 
-// A shortcut's own file object always reports size 0 — the bytes live on
+// A shortcut's own file object always reports size 0; the bytes live on
 // its target, not the shortcut. Since we already have every owned file in
 // `files`, look the target up there instead of undercounting it to 0. Only
 // resolves one hop (a shortcut pointing at another shortcut is vanishingly
 // rare and not worth chasing), and only when the target is itself a plain
-// file we own — a shortcut to a folder isn't a parent/child edge in
+// file we own: a shortcut to a folder isn't a parent/child edge in
 // `childFolders`, so there's no recursive total to attribute here anyway.
 function resolveSize(f, files) {
   if (f.m !== SHORTCUT_MIME || !f.t) {
@@ -455,7 +456,7 @@ function resolveSize(f, files) {
 
 // Pure in-memory pass over the {m,s,p} file map → { totals, childFolders }.
 // Same computation whether the map came from a full listing or an
-// incremental patch — the expensive part was ever getting the map, not this.
+// incremental patch: the expensive part was ever getting the map, not this.
 function computeTotals(files) {
   const totals = new Map(); // id -> {size, hasNativeDocs}
   const childFolders = new Map(); // parentId -> [folderId, ...]
@@ -501,7 +502,7 @@ function computeTotals(files) {
 
 // forceCheck=true (from "Sync now") skips the 15-minute throttle but still
 // prefers an incremental check over a full resync whenever we have a base
-// to patch — a full resync should really only ever happen once.
+// to patch. A full resync should really only ever happen once.
 async function getIndex(token, forceCheck) {
   const stored = await browser.storage.local.get(["driveFiles", "driveTotals", "changesToken", "indexSyncedAt"]);
   const hasBase = stored.driveFiles && stored.changesToken;
@@ -527,7 +528,7 @@ async function getIndex(token, forceCheck) {
         changesToken = await applyChanges(token, files, stored.changesToken, rootId);
       } catch (e) {
         if (e.message !== "INVALID_CHANGES_TOKEN") throw e;
-        console.log("[Drive Folder Size] saved checkpoint is no longer valid — falling back to a full resync");
+        console.log("[Drive Folder Size] saved checkpoint is no longer valid, falling back to a full resync");
         files = null; // fall through below
       }
     }
@@ -585,7 +586,7 @@ async function buildSnapshot() {
 
 // Seeds storage from a snapshot (however it was obtained) and recomputes
 // totals locally rather than trusting a possibly-older totals shape in the
-// file. Deliberately does NOT trigger a sync itself — the next normal
+// file. Deliberately does NOT trigger a sync itself: the next normal
 // getIndex() call sees driveFiles+changesToken already present and takes
 // the incremental path on its own, catching up on anything that changed
 // since the snapshot was saved.
@@ -611,7 +612,7 @@ async function applySnapshot(snapshot) {
 }
 
 // appDataFolder is a hidden per-app space files.list only sees when asked
-// for explicitly (spaces=appDataFolder) — it never shows up in the normal
+// for explicitly (spaces=appDataFolder). It never shows up in the normal
 // 'me' in owners listing this extension already does, so the backup file
 // can't accidentally inflate a folder's size or clutter the user's Drive.
 // One fixed filename, updated in place, so repeated backups don't pile up.
@@ -643,7 +644,7 @@ async function uploadAppDataFile(token, jsonContent) {
   });
   if (resp.status === 401) throw new Error("AUTH_EXPIRED");
   // A token minted from a refresh_token granted before this version (readonly
-  // only) silently keeps that narrower scope — Drive returns 403 rather than
+  // only) silently keeps that narrower scope. Drive returns 403 rather than
   // failing at token-mint time, so this is the only place that's visible.
   if (resp.status === 403) throw new Error("APPDATA_SCOPE_MISSING");
   if (!resp.ok) throw new Error(`APPDATA_UPLOAD_${resp.status}`);
@@ -667,8 +668,8 @@ async function downloadAppDataFile(token) {
 
 // Single call per folder navigation: returns every child folder's id AND its
 // already-computed recursive size together (the index is either already
-// synced — instant — or this is the first call ever and it triggers the one
-// full sync, which can take a while on a big Drive).
+// synced, so this is instant, or this is the first call ever and it
+// triggers the one full sync, which can take a while on a big Drive).
 async function getFolderContents(folderId) {
   const enabled = await getSetting("enabled");
   if (!enabled) return { ok: false, error: "DISABLED" };
@@ -724,7 +725,7 @@ browser.runtime.onMessage.addListener((msg) => {
 
     case "TEST_CONNECTION":
       // Only ever called from a real button click (options/popup), so an
-      // interactive popup is allowed here — but only fall back to one when a
+      // interactive popup is allowed here, but only fall back to one when a
       // stored refresh_token can't silently produce a token on its own,
       // otherwise every "test connection" click would force a fresh consent
       // screen even for an already-connected user.

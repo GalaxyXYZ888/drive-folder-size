@@ -1,24 +1,24 @@
-// Drive Folder Size — content script
+// Drive Folder Size: content script
 //
 // Injected on drive.google.com. Watches the file list, and for "list view"
-// writes each folder's recursive size into its "File size" cell (which
-// Drive otherwise leaves as "—").
+// writes each folder's recursive size into its "File size" cell (which Drive
+// otherwise leaves showing its own placeholder dash).
 //
 // Two things this version specifically fixes vs. the first pass:
 //
 // 1. "Numbers disappear on hover." Drive is a React app; hovering a row
 //    triggers Drive to re-render that row's cells (to show the Share/
-//    Download/Rename icons), and React puts its own last-known value back —
-//    the literal "—" — overwriting whatever we wrote. We don't track "did we
-//    already handle this row" via a DOM attribute anymore (Google can wipe
-//    that along with the text). Instead we keep our own results in a plain
-//    JS Map (`resultsCache`, immune to Drive's re-renders) and re-assert the
-//    right text into the row on every tick, however often that turns out to
-//    be — cheap, since it's just a string comparison for whatever rows are
-//    currently visible.
+//    Download/Rename icons), and React puts its own last-known value (the
+//    placeholder dash) back, overwriting whatever we wrote. We don't track
+//    "did we already handle this row" via a DOM attribute anymore (Google
+//    can wipe that along with the text). Instead we keep our own results in
+//    a plain JS Map (`resultsCache`, immune to Drive's re-renders) and
+//    re-assert the right text into the row on every tick, however often
+//    that turns out to be: cheap, since it's just a string comparison for
+//    whatever rows are currently visible.
 //
 // 2. Folder detection is still done via the API (background script), not
-//    DOM/icon sniffing — see background.js. All of a folder's children and
+//    DOM/icon sniffing; see background.js. All of a folder's children and
 //    their sizes now arrive in ONE message per folder navigation (the
 //    background does one full/incremental sync up front and everything
 //    after that is in-memory arithmetic, so this is normally fast).
@@ -26,20 +26,20 @@
 // 3. "Root doesn't refresh after visiting Computers." Computers, Recent,
 //    Starred etc. all fell through to the same "root" key as My Drive
 //    itself (both have no folder id in the URL), so bouncing through one and
-//    back looked like no navigation happened at all — see computeContextKey.
+//    back looked like no navigation happened at all; see computeContextKey.
 //
 // DOM facts this relies on (verified live on drive.google.com, Aug 2026):
 //   - Each row is [role="row"][data-id="<driveFileId>"]
 //   - A folder's URL is https://drive.google.com/drive/folders/<id>
 //     (optionally with a /u/<n>/ segment); "My Drive" root has no id in the
 //     URL and the Drive API accepts the alias "root" for it.
-//   - Within a row, the "File size" cell is the <td> whose trimmed text is
-//     exactly "—" for folders. We locate it once per row (by content) and
-//     remember its column position, rather than re-searching by content
-//     forever, since after we've written a real value there's no more "—"
-//     to search for.
-// If Google reshuffles the DOM, the symptom is just "no badges appear" —
-// nothing breaks; see ROW_SELECTOR / findInitialSizeCellIndex below.
+//   - Within a row, the "File size" cell is the <td> whose trimmed text
+//     matches EMPTY_SIZE_TEXT exactly, what Drive shows for folders. We
+//     locate it once per row (by content) and remember its column position,
+//     rather than re-searching by content forever, since after we've
+//     written a real value there's nothing left to search for.
+// If Google reshuffles the DOM, the symptom is just "no badges appear,"
+// nothing breaks. See ROW_SELECTOR / findInitialSizeCellIndex below.
 
 const ROW_SELECTOR = '[role="row"][data-id]';
 const EMPTY_SIZE_TEXT = "—"; // em dash, what Drive shows for folders
@@ -60,7 +60,7 @@ function isMyDriveRootUrl() {
 
 function parseFolderIdFromUrl() {
   const m = location.pathname.match(/\/drive\/(?:u\/\d+\/)?folders\/([a-zA-Z0-9_-]+)/);
-  return m ? m[1] : null; // null => root ("My Drive") OR an unsupported page — see computeContextKey
+  return m ? m[1] : null; // null => root ("My Drive") OR an unsupported page, see computeContextKey
 }
 
 function isSupportedListingUrl() {
@@ -69,7 +69,7 @@ function isSupportedListingUrl() {
 
 // A folder's id (or null for My Drive root) uniquely identifies WHAT to
 // show, but "root" was also what a totally unrelated page (Computers,
-// Recent, Starred — none of which match the folders/ URL pattern) collapsed
+// Recent, Starred, none of which match the folders/ URL pattern) collapsed
 // to, since parseFolderIdFromUrl() returns null for those too. That made
 // Root → Computers → Root look like "no change" to refreshFolderContext()'s
 // early-exit check, so re-entering root after visiting Computers never
