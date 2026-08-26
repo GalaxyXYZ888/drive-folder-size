@@ -129,30 +129,30 @@ Temporary add-ons disappear on Firefox restart. Options, cheapest first:
 
 ## Version history
 
-- **0.2** — First working version. Folder detection via the Drive API (not icon/DOM
+- **0.2 Beta** — First working version. Folder detection via the Drive API (not icon/DOM
   sniffing); recursive size computed by walking the folder tree one API call per
   folder. Worked, but slow on wide/deep trees and fragile against Drive's React
   re-renders (badges could revert on hover).
-- **0.3** — Rebuilt size computation around one full Drive file listing +
+- **0.3 Beta** — Rebuilt size computation around one full Drive file listing +
   in-memory arithmetic instead of per-folder API calls (the real fix for
   speed). Rewrote badge rendering to keep re-asserting the correct value
   instead of writing it once, fixing the hover-revert bug. Added live sync
   progress, a "Sync now" button, and a Reconnect flow that never pops an
   unrequested OAuth window.
-- **0.4** — Replaced full-resync-every-time with Drive's `changes.list` API:
+- **0.4 Beta** — Replaced full-resync-every-time with Drive's `changes.list` API:
   the initial full listing only ever needs to happen once, and every sync
   after that fetches just what changed. Fixed a navigation bug where
   visiting Computers (or Recent/Starred) and returning to My Drive wouldn't
   refresh badges until manually re-entering the folder.
-- **1.0** — Approved AMO first version.
-- **1.1** — Replaced the implicit OAuth flow with authorization-code + PKCE,
+- **1.0.0** — Approved AMO first version.
+- **1.1.0** — Replaced the implicit OAuth flow with authorization-code + PKCE,
   exchanged for a refresh token: reconnecting drops from roughly hourly to
   roughly weekly (the hard limit Google imposes on unverified/Testing-mode
   apps), with silent renewal in between. Requires a Client Secret now, saved
   alongside the Client ID on the setup page — see "One-time setup" above.
   Also fixed shortcuts being counted as 0-byte native docs: a shortcut to a
   regular file now contributes its target's real size to folder totals.
-- **1.2 (Restore Improvements)** — Added a way to skip redoing the one-time
+- **1.2.0 (Restore Improvements)** — Added a way to skip redoing the one-time
   full sync on a reinstall or a new computer: export/import the index as a
   local JSON file, or back it up to/restore it from a hidden folder in your
   own Drive (`drive.appdata` scope). See "Restoring without redoing the full
