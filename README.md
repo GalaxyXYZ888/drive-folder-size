@@ -7,7 +7,8 @@ on/off from the toolbar icon.
 The first sync reads your whole Drive once (a few minutes on a large Drive).
 Every sync after that only checks what changed, so it's near-instant, and also
 kicks off in the background when the browser starts, so it's usually already
-done by the time you open Drive.
+done by the time you open Drive. Sizes from the last sync show up immediately
+and update on their own once the check finishes.
 
 ## Install
 
@@ -113,3 +114,6 @@ release.
   Drive backup also refreshes itself about once a week, right after a sync,
   replacing the previous backup file. There's a checkbox on the setup page to
   turn it off, and it shows when the last backup happened.
+- **1.2.3**: Folder sizes now appear immediately from the last sync when you
+  open Drive, then update on their own once the background check finishes,
+  instead of showing nothing until it's done.

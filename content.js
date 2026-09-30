@@ -157,6 +157,16 @@ function startObserving() {
   observer.observe(document.body, { childList: true, subtree: true });
 }
 
+function applyContents(resp) {
+  hasNativeDocsForCurrentFolder = !!resp.hasNativeDocs;
+  folderSizes = new Map(Object.entries(resp.sizes || {}));
+  for (const [id, size] of folderSizes) {
+    resultsCache.set(id, { status: "done", size, hasNativeDocs: hasNativeDocsForCurrentFolder });
+  }
+  ensureTicking();
+  tick();
+}
+
 async function refreshFolderContext() {
   const key = computeContextKey();
   if (key === currentFolderKey) return;
@@ -171,23 +181,34 @@ async function refreshFolderContext() {
   if (!enabledResp || !enabledResp.enabled) return;
 
   const myRequestToken = ++contentsRequestToken;
-  const resp = await browser.runtime
-    .sendMessage({ type: "GET_FOLDER_CONTENTS", folderId: currentFolderId })
-    .catch(() => null);
+  const folderId = currentFolderId;
+  // Still the folder this request was made for? (The user may have moved on
+  // while we were waiting on the background script.)
+  const stillHere = () => myRequestToken === contentsRequestToken && currentFolderKey === key;
+
+  const resp = await browser.runtime.sendMessage({ type: "GET_FOLDER_CONTENTS", folderId }).catch(() => null);
 
   // Bail if the user navigated again while this was in flight (this can take
   // a while on the very first sync of a big Drive).
-  if (myRequestToken !== contentsRequestToken) return;
-
+  if (!stillHere()) return;
   if (!resp || !resp.ok) return;
 
-  hasNativeDocsForCurrentFolder = !!resp.hasNativeDocs;
-  folderSizes = new Map(Object.entries(resp.sizes || {}));
-  for (const [id, size] of folderSizes) {
-    resultsCache.set(id, { status: "done", size, hasNativeDocs: hasNativeDocsForCurrentFolder });
-  }
-  ensureTicking();
-  tick();
+  // The background script answers straight from the last stored index, so
+  // these badges appear immediately even when they're a little out of date.
+  applyContents(resp);
+
+  if (!resp.refreshing) return;
+
+  // A newer index is being fetched in the background. Wait for it, then
+  // swap in the up-to-date sizes. refresh:false asks for the stored index
+  // only, so a failed sync can't send us around this loop again.
+  await browser.runtime.sendMessage({ type: "WAIT_FOR_SYNC" }).catch(() => null);
+  if (!stillHere()) return;
+  const fresh = await browser.runtime
+    .sendMessage({ type: "GET_FOLDER_CONTENTS", folderId, refresh: false })
+    .catch(() => null);
+  if (!stillHere()) return;
+  if (fresh && fresh.ok) applyContents(fresh);
 }
 
 function watchForNavigation() {

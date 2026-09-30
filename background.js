@@ -59,24 +59,41 @@ browser.runtime.onInstalled.addListener(async () => {
   }
 });
 
+// Runs the normal silent check (getIndex() skips it if a sync ran within the
+// last SYNC_CHECK_INTERVAL_MS) without making any caller wait for it. Tracked
+// in one shared promise so a folder open, the startup sync, and the
+// content script's WAIT_FOR_SYNC message all refer to the same run instead of
+// starting duplicates. Silent-only, like every other background-triggered
+// call: never pops an interactive OAuth window, and any failure (not
+// configured yet, no valid refresh token) is swallowed here, since the
+// popup/options page already surfaces that in the ordinary way.
+let backgroundRefresh = null;
+
+function refreshInBackground() {
+  if (!backgroundRefresh) {
+    backgroundRefresh = (async () => {
+      const token = await getSilentToken();
+      await getIndex(token, false);
+    })()
+      .catch(async (e) => {
+        console.log(`[Drive Folder Size] background refresh skipped: ${e.message}`);
+        // A 401 means the cached access token was rejected, so drop it and
+        // let the next attempt mint a fresh one.
+        if (e.message === "AUTH_EXPIRED") await clearToken();
+      })
+      .finally(() => {
+        backgroundRefresh = null;
+      });
+  }
+  return backgroundRefresh;
+}
+
 // Warms the index the moment the browser launches, rather than waiting for
-// the user to actually open a Drive folder: getIndex() below already knows
-// how to do a small incremental check (or, on a brand new install, the one
-// full sync) and how to skip entirely if a sync already ran within the last
-// SYNC_CHECK_INTERVAL_MS, so this just gives it a head start. Silent-only,
-// like every other background-triggered call: never pops an interactive
-// OAuth window, and any failure (not configured yet, no valid refresh
-// token) is swallowed here, since the popup/options page already surfaces
-// that in the ordinary way once the user tries to use the extension.
+// the user to actually open a Drive folder, so it has usually caught up by
+// the time they get there.
 browser.runtime.onStartup.addListener(async () => {
   const enabled = await getSetting("enabled");
-  if (!enabled) return;
-  try {
-    const token = await getSilentToken();
-    await getIndex(token, false);
-  } catch (e) {
-    // nothing to do; see comment above
-  }
+  if (enabled) refreshInBackground();
 });
 
 // ---------- storage helpers ----------
@@ -727,13 +744,43 @@ async function maybeAutoBackup() {
 
 // ---------- message handling ----------
 
+function sizesForFolder(index, folderId) {
+  const key = folderId || ROOT_KEY;
+  const folderIds = index.childFolders[key] || [];
+  const sizes = {};
+  let anyNativeDocs = false;
+  for (const id of folderIds) {
+    const t = index.totals[id] || { size: 0, hasNativeDocs: false };
+    sizes[id] = t.size;
+    anyNativeDocs = anyNativeDocs || t.hasNativeDocs;
+  }
+  return { sizes, hasNativeDocs: anyNativeDocs };
+}
+
 // Single call per folder navigation: returns every child folder's id AND its
-// already-computed recursive size together (the index is either already
-// synced, so this is instant, or this is the first call ever and it
-// triggers the one full sync, which can take a while on a big Drive).
-async function getFolderContents(folderId) {
+// already-computed recursive size together.
+//
+// Answers immediately from the stored index, even if it's older than
+// SYNC_CHECK_INTERVAL_MS, and starts the refresh in the background instead
+// of making the badges wait for it. `refreshing: true` tells the content
+// script a newer index may be on its way, so it can ask WAIT_FOR_SYNC and then
+// re-request with refresh:false (which never starts another refresh, so a
+// failing sync can't loop). Only the very first sync ever, when nothing is
+// stored yet, has to be waited for.
+async function getFolderContents(folderId, refresh = true) {
   const enabled = await getSetting("enabled");
   if (!enabled) return { ok: false, error: "DISABLED" };
+
+  const cached = await browser.storage.local.get(["driveTotals", "indexSyncedAt"]);
+  if (cached.driveTotals) {
+    const stale = !cached.indexSyncedAt || Date.now() - cached.indexSyncedAt >= SYNC_CHECK_INTERVAL_MS;
+    if (refresh && stale) refreshInBackground();
+    return {
+      ok: true,
+      ...sizesForFolder(cached.driveTotals, folderId),
+      refreshing: refresh && (!!backgroundRefresh || !!fullSyncInFlight),
+    };
+  }
 
   let token;
   try {
@@ -744,16 +791,7 @@ async function getFolderContents(folderId) {
 
   try {
     const index = await getIndex(token, false);
-    const key = folderId || ROOT_KEY;
-    const folderIds = index.childFolders[key] || [];
-    const sizes = {};
-    let anyNativeDocs = false;
-    for (const id of folderIds) {
-      const t = index.totals[id] || { size: 0, hasNativeDocs: false };
-      sizes[id] = t.size;
-      anyNativeDocs = anyNativeDocs || t.hasNativeDocs;
-    }
-    return { ok: true, sizes, hasNativeDocs: anyNativeDocs };
+    return { ok: true, ...sizesForFolder(index, folderId), refreshing: false };
   } catch (e) {
     if (e.message === "AUTH_EXPIRED") {
       await clearToken();
@@ -768,7 +806,15 @@ browser.runtime.onMessage.addListener((msg) => {
 
   switch (msg.type) {
     case "GET_FOLDER_CONTENTS":
-      return getFolderContents(msg.folderId);
+      return getFolderContents(msg.folderId, msg.refresh !== false);
+
+    case "WAIT_FOR_SYNC":
+      // Resolves once whatever refresh is running finishes (immediately if
+      // none). Answering late is also what keeps this event page alive for the
+      // whole sync when nothing else is holding it open.
+      return Promise.resolve(backgroundRefresh || fullSyncInFlight)
+        .then(() => ({ ok: true }))
+        .catch(() => ({ ok: false }));
 
     case "GET_SYNC_PROGRESS":
       return Promise.resolve({ progress: syncProgress });
