@@ -36,6 +36,8 @@
 //    the normal incremental sync catch up whatever's changed since.
 
 const SYNC_CHECK_INTERVAL_MS = 15 * 60 * 1000; // don't even check for changes more often than this
+const BACKUP_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // automatic Drive backup cadence
+const BACKUP_RETRY_INTERVAL_MS = 24 * 60 * 60 * 1000; // wait this long after a failed automatic backup
 // drive.appdata is only needed for the Drive-backed backup/restore below;
 // existing connections need to reconnect once to pick it up (a stored
 // refresh_token keeps whatever scope it was originally granted).
@@ -583,6 +585,11 @@ async function getIndex(token, forceCheck) {
     syncProgress = null;
   });
 
+  // Runs after the sync settles (so syncProgress is already cleared) and on
+  // its own branch, so a slow or failing backup never delays or breaks the
+  // sync result the caller is waiting on.
+  fullSyncInFlight.then(() => maybeAutoBackup()).catch(() => {});
+
   return fullSyncInFlight;
 }
 
@@ -682,6 +689,40 @@ async function downloadAppDataFile(token) {
   if (!resp.ok) throw new Error(`APPDATA_DOWNLOAD_${resp.status}`);
   const snapshot = JSON.parse(await resp.text());
   return { snapshot, modifiedTime: file.modifiedTime };
+}
+
+// Weekly automatic backup, checked after every sync (startup or periodic).
+// Updates the same single file in place, so nothing piles up. A failed
+// attempt (for example the drive.appdata scope was never granted) is retried
+// after a day rather than on every sync, and failures stay silent since the
+// setup page already explains how to fix the scope. Opt-out via the
+// autoBackupEnabled setting (on unless explicitly set to false).
+let autoBackupInFlight = false;
+
+async function maybeAutoBackup() {
+  // Claimed synchronously, before the first await, so simultaneous callers
+  // can't all pass the check and each start their own upload.
+  if (autoBackupInFlight) return;
+  autoBackupInFlight = true;
+  try {
+    const s = await browser.storage.local.get(["autoBackupEnabled", "lastBackupAt", "lastBackupAttemptAt"]);
+    if (s.autoBackupEnabled === false) return;
+    const now = Date.now();
+    if (now - (s.lastBackupAt || 0) < BACKUP_INTERVAL_MS) return;
+    if (now - (s.lastBackupAttemptAt || 0) < BACKUP_RETRY_INTERVAL_MS) return;
+
+    await browser.storage.local.set({ lastBackupAttemptAt: now });
+    const snapshot = await buildSnapshot();
+    // Fresh silent token: a long full sync may have used up most of the one
+    // passed to getIndex(), and this never opens a sign-in window.
+    const token = await getSilentToken();
+    await uploadAppDataFile(token, JSON.stringify(snapshot));
+    await browser.storage.local.set({ lastBackupAt: Date.now() });
+  } catch (e) {
+    console.log(`[Drive Folder Size] automatic backup skipped: ${e.message}`);
+  } finally {
+    autoBackupInFlight = false;
+  }
 }
 
 // ---------- message handling ----------
@@ -802,6 +843,7 @@ browser.runtime.onMessage.addListener((msg) => {
           const snapshot = await buildSnapshot();
           const token = await getToken(true);
           await uploadAppDataFile(token, JSON.stringify(snapshot));
+          await setSetting("lastBackupAt", Date.now());
           return { ok: true, fileCount: Object.keys(snapshot.driveFiles).length };
         } catch (e) {
           return { ok: false, error: e.message || "BACKUP_FAILED" };
@@ -814,6 +856,7 @@ browser.runtime.onMessage.addListener((msg) => {
           const token = await getToken(true);
           const { snapshot, modifiedTime } = await downloadAppDataFile(token);
           const fileCount = await applySnapshot(snapshot);
+          if (modifiedTime) await setSetting("lastBackupAt", Date.parse(modifiedTime));
           return { ok: true, fileCount, modifiedTime };
         } catch (e) {
           return { ok: false, error: e.message || "RESTORE_FAILED" };

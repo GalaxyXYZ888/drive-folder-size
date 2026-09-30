@@ -14,6 +14,8 @@ const importFile = document.getElementById("importFile");
 const backupDriveBtn = document.getElementById("backupDriveBtn");
 const restoreDriveBtn = document.getElementById("restoreDriveBtn");
 const backupStatus = document.getElementById("backupStatus");
+const autoBackupToggle = document.getElementById("autoBackupToggle");
+const lastBackupInfo = document.getElementById("lastBackupInfo");
 
 function setStatus(text, isError) {
   statusLine.textContent = text;
@@ -138,6 +140,25 @@ function setBackupStatus(text, isError) {
   backupStatus.textContent = text;
   backupStatus.style.color = isError ? "#c5221f" : "#188038";
 }
+
+async function refreshBackupInfo() {
+  const { autoBackupEnabled, lastBackupAt } = await browser.storage.local.get(["autoBackupEnabled", "lastBackupAt"]);
+  autoBackupToggle.checked = autoBackupEnabled !== false;
+  lastBackupInfo.textContent = lastBackupAt
+    ? `Last backup to Drive: ${new Date(lastBackupAt).toLocaleString()}.`
+    : "No backup to Drive yet.";
+}
+
+autoBackupToggle.addEventListener("change", () => {
+  browser.storage.local.set({ autoBackupEnabled: autoBackupToggle.checked });
+});
+
+// The background script can finish an automatic backup while this page is open.
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && (changes.lastBackupAt || changes.autoBackupEnabled)) refreshBackupInfo();
+});
+
+refreshBackupInfo();
 
 // Friendlier text for the errors someone's actually likely to hit here.
 function describeSnapshotError(error) {

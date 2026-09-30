@@ -36,7 +36,9 @@ sync. Two ways around it, both on the setup page:
 - **Back up / Restore to Drive**: same snapshot, stored in a hidden folder in
   your own Drive (`drive.appdata` scope). Handy on a new computer since
   there's no file to carry over. Works right away as long as you added that
-  scope during setup above.
+  scope during setup above. The backup also refreshes itself automatically
+  about once a week (after a sync), replacing the previous one, and you can
+  turn that off on the setup page.
 
 Either way, the very next sync automatically catches up on anything that
 changed since, the same as a normal incremental sync, just a bigger catch-up
@@ -109,3 +111,7 @@ release.
 - **1.2.2**: The incremental sync now also kicks off silently when the
   browser starts, instead of only when a folder is first opened, so it's
   usually already caught up by the time you get to Drive.
+- **1.3.0**: The Drive backup now refreshes itself about once a week, after
+  any sync (including the new startup one), updating the single backup file in
+  place. There's a checkbox on the setup page to turn it off, and it shows
+  when the last backup happened.
