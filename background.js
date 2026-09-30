@@ -56,6 +56,7 @@ browser.runtime.onInstalled.addListener(async () => {
     // Off by default until the user has set up a Client ID and flips the
     // popup toggle: avoids error badges everywhere on first install.
     await browser.storage.local.set({ enabled: false });
+    updateIcon();
   }
 });
 
@@ -335,10 +336,12 @@ let syncProgress = null; // { mode:'full'|'incremental', filesSoFar, pageCount, 
 
 // ---------- toolbar icon ----------
 //
-// The toolbar icon shows the state at a glance: the usual green badge when
-// ready, orange while a sync or restore is running, and red when there's no
-// usable Google connection (not set up yet, signed out, or the refresh token
-// expired). "Usable" is judged from what's stored, with no network call: a
+// The toolbar icon shows the state at a glance: a green dot when ready,
+// orange while a sync or restore is running, red when there's no usable
+// Google connection (not set up yet, signed out, or the refresh token
+// expired), and grey when the popup toggle has it switched off, which wins
+// over everything else since nothing runs while it's off. "Usable" is judged
+// from what's stored, with no network call: a
 // client id plus either a still-valid access token or a refresh token. An
 // expired or revoked refresh token is only discovered when a refresh is
 // attempted (browser start, opening a folder, the popup), and getToken()
@@ -350,12 +353,14 @@ const ICON_STATES = {
     prefix: "icons/icon-disconnected-",
     title: "Drive Folder Size: not connected to Google Drive, click to set up or reconnect",
   },
+  disabled: { prefix: "icons/icon-disabled-", title: "Drive Folder Size: turned off" },
 };
 let shownIconState = null;
 
 async function computeIconState() {
+  const s = await browser.storage.local.get(["enabled", "clientId", "authToken", "authTokenExpiry", "refreshToken"]);
+  if (!s.enabled) return "disabled";
   if (syncProgress) return "syncing";
-  const s = await browser.storage.local.get(["clientId", "authToken", "authTokenExpiry", "refreshToken"]);
   const hasValidToken = s.authToken && s.authTokenExpiry && Date.now() < s.authTokenExpiry;
   return s.clientId && (hasValidToken || s.refreshToken) ? "ready" : "disconnected";
 }
@@ -959,7 +964,10 @@ browser.runtime.onMessage.addListener((msg) => {
       return getSetting("enabled").then((v) => ({ enabled: !!v }));
 
     case "SET_ENABLED":
-      return setSetting("enabled", !!msg.enabled).then(() => ({ ok: true }));
+      return setSetting("enabled", !!msg.enabled).then(() => {
+        updateIcon();
+        return { ok: true };
+      });
 
     case "CHECK_AUTH":
       return getSilentToken()
