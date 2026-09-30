@@ -30,27 +30,35 @@ connect.
 ## Restoring without redoing the full sync
 
 Reinstalling, or moving to a new computer, normally means redoing that full
-sync. Two ways around it, both on the setup page:
+sync. The setup page has two ways around it:
 
 - **Export / Import**: save the index as a local JSON file you carry
   yourself.
 - **Back up / Restore to Drive**: same snapshot, stored in a hidden folder in
   your own Drive (`drive.appdata` scope). Handy on a new computer since
   there's no file to carry over. Works right away as long as you added that
-  scope during setup above. The backup also refreshes itself automatically
-  about once a week (after a sync), replacing the previous one, and you can
-  turn that off on the setup page.
+  scope during setup above.
 
 Either way, the very next sync automatically catches up on anything that
 changed since, the same as a normal incremental sync, just a bigger catch-up
-if the snapshot is old.
+if the snapshot is old. Restore and Import ask for confirmation first, since
+they replace the index on this computer.
 
-The Drive backup is also used automatically in the two cases where it beats a
-full sync: a computer with no index yet, or one whose saved checkpoint has
-expired. It restores the backup and catches up from there. Otherwise it's left
-alone, since a small catch-up is cheaper than downloading the whole backup.
-"Clear cache" still forces a true full sync, and turning off the Drive
-checkbox on the setup page stops both the weekly upload and this.
+### Automatic
+
+With the "Use the Drive backup automatically" checkbox on (the default):
+
+- The backup refreshes itself about once a week, right after a sync, updating
+  the same single file. If Drive already holds the same state, nothing is
+  uploaded.
+- A computer with no index yet, or one whose saved checkpoint has expired,
+  restores the backup and catches up from there instead of doing a full sync.
+  In every other case the backup is left alone, since a small catch-up is
+  cheaper than downloading the whole thing.
+
+"Clear cache" still forces a true full sync, and turning the checkbox off
+stops both of the above. The setup page shows when the index was last updated
+and when the last backup happened.
 
 ## Known limitations
 
@@ -60,6 +68,12 @@ checkbox on the setup page stops both the weekly upload and this.
   size, so a folder containing them shows a slightly undercounted total.
   Shortcuts to a regular file resolve to the target's real size. Shortcuts
   to a native doc inherit the same caveat.
+- **Sizes can be briefly out of date.** When you open Drive they show right
+  away from the last sync, then update on their own once the background check
+  finishes (usually a few seconds).
+- **No background timer.** A sync runs when the browser starts and when you
+  open a Drive folder (at most every 15 minutes), so a browser left open with
+  Drive closed doesn't sync.
 - **Reconnecting roughly weekly**, Google's hard limit for OAuth apps left
   in Testing mode. A one-click **Reconnect** appears in the toolbar popup
   when it's needed. It's never triggered without a deliberate click.
@@ -81,10 +95,10 @@ release.
 ## Files
 
 - `manifest.json`: extension manifest (MV3)
-- `background.js`: OAuth (auth-code + PKCE, refresh tokens), full and incremental (`changes.list`) sync, in-memory folder totals, portable snapshots (local export/import and Drive appDataFolder backup)
-- `content.js`: injects size badges into the Drive page, hover-resistant, tracks Drive SPA navigation
+- `background.js`: OAuth (auth-code + PKCE, refresh tokens), full and incremental (`changes.list`) sync, background refresh on browser start and folder open, in-memory folder totals, portable snapshots (local export/import, Drive appDataFolder backup with weekly upload and automatic restore)
+- `content.js`: injects size badges into the Drive page (stored sizes first, refreshed when the sync ends), hover-resistant, tracks Drive SPA navigation
 - `popup.html`/`popup.js`: on/off toggle, live sync progress, Reconnect button, link to setup
-- `options.html`/`options.js`: setup page (Client ID/secret entry, connect/test, sync now, disconnect, restore)
+- `options.html`/`options.js`: setup page (Client ID/secret entry, connect/test, sync now, clear cache, disconnect, export/import, Drive backup and restore, last sync and backup times)
 
 ## Version history
 
@@ -121,13 +135,19 @@ release.
   Drive backup also refreshes itself about once a week, right after a sync,
   replacing the previous backup file. There's a checkbox on the setup page to
   turn it off, and it shows when the last backup happened.
-- **1.3.0**: Folder sizes now appear immediately from the last sync when you
-  open Drive, then update on their own once the background check finishes,
-  instead of showing nothing until it's done. The setup page always shows when
-  the index was last updated (next to the backup info too) instead of that line
-  getting replaced by sync progress. A new computer, or one whose saved
-  checkpoint has expired, now restores the Drive backup and catches up instead
-  of doing a full sync. The weekly backup skips the upload when Drive already
-  has the same state, and the missing-scope error for the Drive backup now
-  shows up right away with the proper message. Clear cache, Disconnect, Restore
-  from Drive and Import now ask for confirmation first.
+- **1.3.0**:
+  - Folder sizes appear immediately from the last sync when you open Drive,
+    then update on their own once the background check finishes, instead of
+    showing nothing until it's done. This also works while signed out.
+  - A new computer, or one whose saved checkpoint has expired, now restores
+    the Drive backup and catches up instead of doing a full sync. "Clear cache"
+    still forces a true full sync, and the Drive checkbox now covers this as
+    well as the weekly upload.
+  - The weekly backup skips the upload when Drive already has the same state.
+  - The setup page always shows when the index was last updated (also next to
+    the backup info), with sync progress on its own line instead of replacing
+    it, and a restored index is labelled as restored.
+  - Clear cache, Disconnect, Restore from Drive and Import now ask for
+    confirmation first.
+  - The Drive backup's missing-scope error now appears right away with the
+    proper message, instead of a rate-limit error after a delay.
