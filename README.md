@@ -129,4 +129,5 @@ release.
   checkpoint has expired, now restores the Drive backup and catches up instead
   of doing a full sync. The weekly backup skips the upload when Drive already
   has the same state, and the missing-scope error for the Drive backup now
-  shows up right away with the proper message.
+  shows up right away with the proper message. Clear cache, Disconnect, Restore
+  from Drive and Import now ask for confirmation first.

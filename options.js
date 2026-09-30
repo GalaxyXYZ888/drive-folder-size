@@ -154,12 +154,20 @@ syncNowBtn.addEventListener("click", async () => {
 });
 
 clearCacheBtn.addEventListener("click", async () => {
+  const ok = confirm(
+    "Clear the cache?\n\nThe next sync will re-read your whole Drive from scratch, which can take many minutes on a large Drive."
+  );
+  if (!ok) return;
   await browser.runtime.sendMessage({ type: "CLEAR_CACHE" });
   setStatus("Cache cleared.", false);
   await refreshSyncStatus();
 });
 
 disconnectBtn.addEventListener("click", async () => {
+  const ok = confirm(
+    "Disconnect your Google account?\n\nFolder sizes will stop updating until you connect again. Your stored index is kept."
+  );
+  if (!ok) return;
   await browser.runtime.sendMessage({ type: "DISCONNECT" });
   setStatus("Disconnected. Click \"Connect & test\" to sign in again.", false);
 });
@@ -224,6 +232,10 @@ importFile.addEventListener("change", async () => {
   const file = importFile.files[0];
   importFile.value = ""; // so re-selecting the same file still fires "change"
   if (!file) return;
+  const ok = confirm(
+    `Replace this computer's index with "${file.name}"?\n\nThe next sync will catch up on anything that changed since that file was saved.`
+  );
+  if (!ok) return;
   try {
     const snapshot = JSON.parse(await file.text());
     const resp = await browser.runtime.sendMessage({ type: "IMPORT_SNAPSHOT", snapshot });
@@ -253,6 +265,10 @@ backupDriveBtn.addEventListener("click", async () => {
 });
 
 restoreDriveBtn.addEventListener("click", async () => {
+  const ok = confirm(
+    "Replace this computer's index with the backup from Drive?\n\nAnything newer on this computer is overwritten, and the next sync catches up from the backup."
+  );
+  if (!ok) return;
   setBackupStatus("Restoring…", false);
   const resp = await browser.runtime.sendMessage({ type: "RESTORE_FROM_DRIVE" });
   if (resp && resp.ok) {
