@@ -8,6 +8,8 @@ const clearCacheBtn = document.getElementById("clearCacheBtn");
 const disconnectBtn = document.getElementById("disconnectBtn");
 const syncNowBtn = document.getElementById("syncNowBtn");
 const syncStatus = document.getElementById("syncStatus");
+const syncProgressLine = document.getElementById("syncProgress");
+const lastIndexInfo = document.getElementById("lastIndexInfo");
 const exportBtn = document.getElementById("exportBtn");
 const importBtn = document.getElementById("importBtn");
 const importFile = document.getElementById("importFile");
@@ -30,22 +32,31 @@ function formatDuration(ms) {
   return `${min}m ${sec}s`;
 }
 
+// Shows when the index was last brought up to date, in the Sync card and again
+// next to the backup info. Kept separate from the live progress line so a sync
+// that's running (or has just finished) can never leave this text stale or
+// hide it.
 async function refreshSyncStatus() {
   const { indexSyncedAt, lastSyncMeta } = await browser.storage.local.get(["indexSyncedAt", "lastSyncMeta"]);
   if (!indexSyncedAt) {
     syncStatus.textContent = "Not synced yet. Happens automatically the first time you open a folder.";
+    lastIndexInfo.textContent = "No index yet. The first sync creates it.";
     return;
   }
   const when = new Date(indexSyncedAt).toLocaleString();
+  lastIndexInfo.textContent = `Index last updated: ${when}.`;
   if (!lastSyncMeta) {
     syncStatus.textContent = `Last synced ${when}.`;
     return;
   }
   const { mode, folderCount, fileCount, durationMs } = lastSyncMeta;
+  const counts = `${folderCount.toLocaleString()} folders, ${fileCount.toLocaleString()} files`;
+  if (mode === "restored") {
+    syncStatus.textContent = `Last synced ${when}: ${counts} (restored from a backup).`;
+    return;
+  }
   const modeLabel = mode === "incremental" ? "incremental check" : "full sync";
-  syncStatus.textContent =
-    `Last synced ${when}: ${folderCount.toLocaleString()} folders, ${fileCount.toLocaleString()} files, ` +
-    `took ${formatDuration(durationMs)} (${modeLabel}).`;
+  syncStatus.textContent = `Last synced ${when}: ${counts}, took ${formatDuration(durationMs)} (${modeLabel}).`;
 }
 
 // Polls the background script's live progress so "Syncing…" isn't a black
@@ -53,6 +64,8 @@ async function refreshSyncStatus() {
 // backoff (not just raw file count) is what's making it slow. Runs
 // continuously in the background so it also picks up a sync that was
 // triggered by just browsing Drive in another tab, not only the button here.
+// Every tick also re-reads the (small) last-sync and last-backup info, so both
+// update on their own the moment a background sync or backup finishes.
 let progressPollHandle = null;
 function startProgressPolling() {
   if (progressPollHandle) return;
@@ -62,17 +75,21 @@ function startProgressPolling() {
     if (!progress) {
       syncNowBtn.disabled = false;
       syncNowBtn.textContent = "Sync now";
-      return;
+      syncProgressLine.hidden = true;
+    } else {
+      syncNowBtn.disabled = true;
+      syncNowBtn.textContent = progress.mode === "incremental" ? "Checking for changes…" : "Full sync…";
+      const elapsedSec = Math.round((Date.now() - progress.startedAt) / 1000);
+      const rateNote =
+        progress.rateLimitHits > 0
+          ? `, hit the API rate limit ${progress.rateLimitHits}× so far`
+          : "";
+      const label = progress.mode === "incremental" ? "Checking for changes" : "Full sync";
+      syncProgressLine.textContent = `${label}… ${progress.filesSoFar.toLocaleString()} items across ${progress.pageCount} page(s), ${elapsedSec}s elapsed${rateNote}.`;
+      syncProgressLine.hidden = false;
     }
-    syncNowBtn.disabled = true;
-    syncNowBtn.textContent = progress.mode === "incremental" ? "Checking for changes…" : "Full sync…";
-    const elapsedSec = Math.round((Date.now() - progress.startedAt) / 1000);
-    const rateNote =
-      progress.rateLimitHits > 0
-        ? `, hit the API rate limit ${progress.rateLimitHits}× so far`
-        : "";
-    const label = progress.mode === "incremental" ? "Checking for changes" : "Full sync";
-    syncStatus.textContent = `${label}… ${progress.filesSoFar.toLocaleString()} items across ${progress.pageCount} page(s), ${elapsedSec}s elapsed${rateNote}.`;
+    refreshSyncStatus();
+    refreshBackupInfo();
   }, 1000);
 }
 
@@ -141,9 +158,10 @@ function setBackupStatus(text, isError) {
   backupStatus.style.color = isError ? "#c5221f" : "#188038";
 }
 
+// Text only: this runs every second from the progress poll, so it must not
+// touch the checkbox or a click could be flipped back before it's saved.
 async function refreshBackupInfo() {
-  const { autoBackupEnabled, lastBackupAt } = await browser.storage.local.get(["autoBackupEnabled", "lastBackupAt"]);
-  autoBackupToggle.checked = autoBackupEnabled !== false;
+  const { lastBackupAt } = await browser.storage.local.get("lastBackupAt");
   lastBackupInfo.textContent = lastBackupAt
     ? `Last backup to Drive: ${new Date(lastBackupAt).toLocaleString()}.`
     : "No backup to Drive yet.";
@@ -153,11 +171,9 @@ autoBackupToggle.addEventListener("change", () => {
   browser.storage.local.set({ autoBackupEnabled: autoBackupToggle.checked });
 });
 
-// The background script can finish an automatic backup while this page is open.
-browser.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && (changes.lastBackupAt || changes.autoBackupEnabled)) refreshBackupInfo();
+browser.storage.local.get("autoBackupEnabled").then(({ autoBackupEnabled }) => {
+  autoBackupToggle.checked = autoBackupEnabled !== false;
 });
-
 refreshBackupInfo();
 
 // Friendlier text for the errors someone's actually likely to hit here.

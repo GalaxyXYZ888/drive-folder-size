@@ -116,4 +116,6 @@ release.
   turn it off, and it shows when the last backup happened.
 - **1.2.3**: Folder sizes now appear immediately from the last sync when you
   open Drive, then update on their own once the background check finishes,
-  instead of showing nothing until it's done.
+  instead of showing nothing until it's done. The setup page also always shows
+  when the index was last updated (next to the backup info too), instead of
+  that line getting replaced by sync progress.
