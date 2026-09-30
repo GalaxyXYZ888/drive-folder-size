@@ -57,6 +57,26 @@ browser.runtime.onInstalled.addListener(async () => {
   }
 });
 
+// Warms the index the moment the browser launches, rather than waiting for
+// the user to actually open a Drive folder: getIndex() below already knows
+// how to do a small incremental check (or, on a brand new install, the one
+// full sync) and how to skip entirely if a sync already ran within the last
+// SYNC_CHECK_INTERVAL_MS, so this just gives it a head start. Silent-only,
+// like every other background-triggered call: never pops an interactive
+// OAuth window, and any failure (not configured yet, no valid refresh
+// token) is swallowed here, since the popup/options page already surfaces
+// that in the ordinary way once the user tries to use the extension.
+browser.runtime.onStartup.addListener(async () => {
+  const enabled = await getSetting("enabled");
+  if (!enabled) return;
+  try {
+    const token = await getSilentToken();
+    await getIndex(token, false);
+  } catch (e) {
+    // nothing to do; see comment above
+  }
+});
+
 // ---------- storage helpers ----------
 
 async function getSetting(key) {

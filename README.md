@@ -5,7 +5,9 @@ column that normally shows nothing useful for folders gets filled in. Toggle
 on/off from the toolbar icon.
 
 The first sync reads your whole Drive once (a few minutes on a large Drive).
-Every sync after that only checks what changed, so it's near-instant.
+Every sync after that only checks what changed, so it's near-instant, and also
+kicks off in the background when the browser starts, so it's usually already
+done by the time you open Drive.
 
 ## Install
 
@@ -104,3 +106,6 @@ release.
   local JSON file, or back it up to/restore it from a hidden folder in your
   own Drive (`drive.appdata` scope). See "Restoring without redoing the full
   sync" above.
+- **1.2.2**: The incremental sync now also kicks off silently when the
+  browser starts, instead of only when a folder is first opened, so it's
+  usually already caught up by the time you get to Drive.
