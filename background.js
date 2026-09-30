@@ -543,7 +543,13 @@ function computeTotals(files) {
 // prefers an incremental check over a full resync whenever we have a base
 // to patch. A full resync should really only ever happen once.
 async function getIndex(token, forceCheck) {
-  const stored = await browser.storage.local.get(["driveFiles", "driveTotals", "changesToken", "indexSyncedAt"]);
+  const stored = await browser.storage.local.get([
+    "driveFiles",
+    "driveTotals",
+    "changesToken",
+    "indexSyncedAt",
+    "forceFullResync",
+  ]);
   const hasBase = stored.driveFiles && stored.changesToken;
 
   if (!forceCheck && stored.driveTotals && stored.indexSyncedAt) {
@@ -557,29 +563,53 @@ async function getIndex(token, forceCheck) {
     let files = null;
     let changesToken;
     let mode;
+    let restoredFrom = null; // modifiedTime of the Drive backup we started from, if any
+    let base = hasBase ? { driveFiles: stored.driveFiles, changesToken: stored.changesToken } : null;
+    // "Clear cache" means start over from scratch, so it never restores.
+    let triedRestore = !!stored.forceFullResync;
 
-    if (hasBase) {
-      mode = "incremental";
-      syncProgress = { mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
-      try {
-        const rootId = await fetchRootId(token);
-        files = new Map(Object.entries(stored.driveFiles));
-        changesToken = await applyChanges(token, files, stored.changesToken, rootId);
-      } catch (e) {
-        if (e.message !== "INVALID_CHANGES_TOKEN") throw e;
-        console.log("[Drive Folder Size] saved checkpoint is no longer valid, falling back to a full resync");
-        files = null; // fall through below
+    for (;;) {
+      if (base) {
+        mode = "incremental";
+        syncProgress = { mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
+        try {
+          const rootId = await fetchRootId(token);
+          const candidate = new Map(Object.entries(base.driveFiles));
+          changesToken = await applyChanges(token, candidate, base.changesToken, rootId);
+          files = candidate;
+          break;
+        } catch (e) {
+          if (e.message !== "INVALID_CHANGES_TOKEN") throw e;
+          console.log("[Drive Folder Size] saved checkpoint is no longer valid");
+          base = null;
+          restoredFrom = null;
+        }
       }
-    }
 
-    if (!files) {
+      // No usable index on this computer (first run here, or the checkpoint
+      // expired). Try the Drive backup once before paying for a full listing.
+      // If its own checkpoint turns out to be expired too, the loop comes
+      // back here with triedRestore set and falls through to the full sync.
+      if (!triedRestore) {
+        triedRestore = true;
+        syncProgress = { mode: "restore", filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
+        const backup = await fetchBackupBase(token, stored.indexSyncedAt);
+        if (backup) {
+          base = backup;
+          restoredFrom = backup.modifiedTime;
+          continue;
+        }
+      }
+
       mode = "full";
+      restoredFrom = null;
       syncProgress = { mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
       const rootId = await fetchRootId(token);
       // Grab the checkpoint BEFORE listing, so the next incremental sync
       // also catches anything that changed while this listing was running.
       changesToken = await fetchStartPageToken(token);
       files = await fetchAllFilesAsMap(token, rootId);
+      break;
     }
 
     const totals = computeTotals(files);
@@ -591,11 +621,19 @@ async function getIndex(token, forceCheck) {
       indexSyncedAt: finishedAt,
       lastSyncMeta: {
         mode,
+        fromBackup: !!restoredFrom,
         fileCount: files.size,
         folderCount: Object.keys(totals.totals).length,
         durationMs: finishedAt - startedAt,
       },
     });
+    await browser.storage.local.remove("forceFullResync");
+    if (restoredFrom) {
+      // The backup we started from is the newest copy in Drive, so don't
+      // immediately upload the same thing back.
+      const { lastBackupAt } = await browser.storage.local.get("lastBackupAt");
+      await browser.storage.local.set({ lastBackupAt: Math.max(lastBackupAt || 0, restoredFrom) });
+    }
     return totals;
   })().finally(() => {
     fullSyncInFlight = null;
@@ -660,19 +698,32 @@ async function applySnapshot(snapshot) {
 // 'me' in owners listing this extension already does, so the backup file
 // can't accidentally inflate a folder's size or clutter the user's Drive.
 // One fixed filename, updated in place, so repeated backups don't pile up.
+// Plain fetch rather than fetchDriveJson: that helper treats every 403 as a
+// rate limit and retries with backoff, which here would stall for several
+// seconds, inflate the rate-limit counter, and report the wrong error when the
+// real cause is just that the drive.appdata scope was never granted.
 async function findAppDataFile(token) {
   const url = new URL("https://www.googleapis.com/drive/v3/files");
   url.searchParams.set("spaces", "appDataFolder");
   url.searchParams.set("q", `name = '${APPDATA_FILENAME}' and trashed = false`);
-  url.searchParams.set("fields", "files(id, modifiedTime)");
-  const data = await throttled(() => fetchDriveJson(url.toString(), token));
+  url.searchParams.set("fields", "files(id, modifiedTime, appProperties)");
+  const resp = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+  if (resp.status === 401) throw new Error("AUTH_EXPIRED");
+  if (resp.status === 403) throw new Error("APPDATA_SCOPE_MISSING");
+  if (!resp.ok) throw new Error(`APPDATA_LIST_${resp.status}`);
+  const data = await resp.json();
   return (data.files && data.files[0]) || null;
 }
 
-async function uploadAppDataFile(token, jsonContent) {
-  const existing = await findAppDataFile(token);
+// The checkpoint token is stored on the file as a property, so later runs can
+// tell whether Drive already holds this exact state with one small metadata
+// call instead of downloading or re-uploading tens of MB. Pass `existing`
+// (the result of findAppDataFile) to skip looking it up again.
+async function uploadAppDataFile(token, jsonContent, changesToken, existing) {
+  if (existing === undefined) existing = await findAppDataFile(token);
+  const appProperties = { changesToken: String(changesToken) };
   const boundary = `dfs_${Math.random().toString(36).slice(2)}`;
-  const metadata = existing ? {} : { name: APPDATA_FILENAME, parents: ["appDataFolder"] };
+  const metadata = existing ? { appProperties } : { name: APPDATA_FILENAME, parents: ["appDataFolder"], appProperties };
   const body =
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
     `--${boundary}\r\nContent-Type: application/json\r\n\r\n${jsonContent}\r\n` +
@@ -695,8 +746,8 @@ async function uploadAppDataFile(token, jsonContent) {
   return resp.json();
 }
 
-async function downloadAppDataFile(token) {
-  const file = await findAppDataFile(token);
+async function downloadAppDataFile(token, knownFile) {
+  const file = knownFile || (await findAppDataFile(token));
   if (!file) throw new Error("NO_BACKUP_FOUND");
   const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -706,6 +757,32 @@ async function downloadAppDataFile(token) {
   if (!resp.ok) throw new Error(`APPDATA_DOWNLOAD_${resp.status}`);
   const snapshot = JSON.parse(await resp.text());
   return { snapshot, modifiedTime: file.modifiedTime };
+}
+
+// Used by the sync itself, only at the two moments where a Drive backup
+// clearly beats a full listing: this computer has no index yet, or its saved
+// checkpoint has expired. (In every other case a small catch-up is cheaper
+// than downloading tens of MB, so the backup is deliberately left alone.)
+// Returns a base to catch up from, or null to carry on with the full sync.
+// Never throws: a missing scope, no backup, or a network hiccup must not
+// stand in the way of the normal path. `localSyncedAt` is when this
+// computer's own index was last updated, so an older backup isn't downloaded
+// for nothing. Respects the same opt-out as the weekly upload.
+async function fetchBackupBase(token, localSyncedAt) {
+  try {
+    const { autoBackupEnabled } = await browser.storage.local.get("autoBackupEnabled");
+    if (autoBackupEnabled === false) return null;
+    const file = await findAppDataFile(token);
+    if (!file) return null;
+    const modifiedTime = Date.parse(file.modifiedTime);
+    if (localSyncedAt && !(modifiedTime > localSyncedAt)) return null;
+    const { snapshot } = await downloadAppDataFile(token, file);
+    if (!snapshot || typeof snapshot !== "object" || !snapshot.driveFiles || !snapshot.changesToken) return null;
+    return { driveFiles: snapshot.driveFiles, changesToken: snapshot.changesToken, modifiedTime };
+  } catch (e) {
+    console.log(`[Drive Folder Size] Drive backup not used: ${e.message}`);
+    return null;
+  }
 }
 
 // Weekly automatic backup, checked after every sync (startup or periodic).
@@ -733,7 +810,13 @@ async function maybeAutoBackup() {
     // Fresh silent token: a long full sync may have used up most of the one
     // passed to getIndex(), and this never opens a sign-in window.
     const token = await getSilentToken();
-    await uploadAppDataFile(token, JSON.stringify(snapshot));
+    const remote = await findAppDataFile(token);
+    if (remote && remote.appProperties && remote.appProperties.changesToken === String(snapshot.changesToken)) {
+      // Drive already holds exactly this state, so there's nothing to send.
+      await browser.storage.local.set({ lastBackupAt: Date.now() });
+      return;
+    }
+    await uploadAppDataFile(token, JSON.stringify(snapshot), snapshot.changesToken, remote);
     await browser.storage.local.set({ lastBackupAt: Date.now() });
   } catch (e) {
     console.log(`[Drive Folder Size] automatic backup skipped: ${e.message}`);
@@ -871,7 +954,11 @@ browser.runtime.onMessage.addListener((msg) => {
       })();
 
     case "CLEAR_CACHE":
-      return clearIndex().then(() => ({ ok: true }));
+      // The flag makes the next sync a true full resync instead of starting
+      // from the Drive backup, which would just bring the same data back.
+      return clearIndex()
+        .then(() => setSetting("forceFullResync", true))
+        .then(() => ({ ok: true }));
 
     case "EXPORT_SNAPSHOT":
       return buildSnapshot()
@@ -888,7 +975,7 @@ browser.runtime.onMessage.addListener((msg) => {
         try {
           const snapshot = await buildSnapshot();
           const token = await getToken(true);
-          await uploadAppDataFile(token, JSON.stringify(snapshot));
+          await uploadAppDataFile(token, JSON.stringify(snapshot), snapshot.changesToken);
           await setSetting("lastBackupAt", Date.now());
           return { ok: true, fileCount: Object.keys(snapshot.driveFiles).length };
         } catch (e) {

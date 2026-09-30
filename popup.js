@@ -16,8 +16,10 @@ async function refreshConnStatus() {
   if (progressResp && progressResp.progress) {
     const p = progressResp.progress;
     const elapsedSec = Math.round((Date.now() - p.startedAt) / 1000);
-    const label = p.mode === "incremental" ? "Checking for changes" : "Full sync";
-    connStatus.textContent = `${label}… ${p.filesSoFar.toLocaleString()} items, ${elapsedSec}s elapsed. See the setup page for details.`;
+    connStatus.textContent =
+      p.mode === "restore"
+        ? `Restoring the Drive backup… ${elapsedSec}s elapsed. See the setup page for details.`
+        : `${p.mode === "incremental" ? "Checking for changes" : "Full sync"}… ${p.filesSoFar.toLocaleString()} items, ${elapsedSec}s elapsed. See the setup page for details.`;
     connStatus.style.color = "#5f6368";
     reconnectBtn.style.display = "none";
     return;

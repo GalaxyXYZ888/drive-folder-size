@@ -55,7 +55,12 @@ async function refreshSyncStatus() {
     syncStatus.textContent = `Last synced ${when}: ${counts} (restored from a backup).`;
     return;
   }
-  const modeLabel = mode === "incremental" ? "incremental check" : "full sync";
+  const modeLabel =
+    mode === "incremental"
+      ? lastSyncMeta.fromBackup
+        ? "caught up after restoring the Drive backup"
+        : "incremental check"
+      : "full sync";
   syncStatus.textContent = `Last synced ${when}: ${counts}, took ${formatDuration(durationMs)} (${modeLabel}).`;
 }
 
@@ -76,6 +81,12 @@ function startProgressPolling() {
       syncNowBtn.disabled = false;
       syncNowBtn.textContent = "Sync now";
       syncProgressLine.hidden = true;
+    } else if (progress.mode === "restore") {
+      syncNowBtn.disabled = true;
+      syncNowBtn.textContent = "Restoring backup…";
+      const elapsedSec = Math.round((Date.now() - progress.startedAt) / 1000);
+      syncProgressLine.textContent = `Restoring the Drive backup instead of a full sync… ${elapsedSec}s elapsed.`;
+      syncProgressLine.hidden = false;
     } else {
       syncNowBtn.disabled = true;
       syncNowBtn.textContent = progress.mode === "incremental" ? "Checking for changes…" : "Full sync…";

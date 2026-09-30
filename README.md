@@ -45,6 +45,13 @@ Either way, the very next sync automatically catches up on anything that
 changed since, the same as a normal incremental sync, just a bigger catch-up
 if the snapshot is old.
 
+The Drive backup is also used automatically in the two cases where it beats a
+full sync: a computer with no index yet, or one whose saved checkpoint has
+expired. It restores the backup and catches up from there. Otherwise it's left
+alone, since a small catch-up is cheaper than downloading the whole backup.
+"Clear cache" still forces a true full sync, and turning off the Drive
+checkbox on the setup page stops both the weekly upload and this.
+
 ## Known limitations
 
 - **List view only** (My Drive root and folder pages), not Grid view, Recent,
@@ -114,8 +121,12 @@ release.
   Drive backup also refreshes itself about once a week, right after a sync,
   replacing the previous backup file. There's a checkbox on the setup page to
   turn it off, and it shows when the last backup happened.
-- **1.2.3**: Folder sizes now appear immediately from the last sync when you
+- **1.3.0**: Folder sizes now appear immediately from the last sync when you
   open Drive, then update on their own once the background check finishes,
-  instead of showing nothing until it's done. The setup page also always shows
-  when the index was last updated (next to the backup info too), instead of
-  that line getting replaced by sync progress.
+  instead of showing nothing until it's done. The setup page always shows when
+  the index was last updated (next to the backup info too) instead of that line
+  getting replaced by sync progress. A new computer, or one whose saved
+  checkpoint has expired, now restores the Drive backup and catches up instead
+  of doing a full sync. The weekly backup skips the upload when Drive already
+  has the same state, and the missing-scope error for the Drive backup now
+  shows up right away with the proper message.
