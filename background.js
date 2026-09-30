@@ -177,6 +177,7 @@ async function storeAccessToken(tokens) {
     authToken: tokens.access_token,
     authTokenExpiry: Date.now() + tokens.expires_in * 1000 - 60000, // refresh a minute early
   });
+  updateIcon();
 }
 
 // interactive=false (content scripts, background polling) must NEVER pop an
@@ -207,6 +208,7 @@ async function getToken(interactive) {
       // Revoked, or expired (Testing-mode apps: after 7 days), so drop it and
       // fall through to a fresh interactive consent if one is allowed.
       await browser.storage.local.remove(["refreshToken"]);
+      updateIcon();
       if (!interactive) throw new Error("SILENT_AUTH_FAILED");
     }
   } else if (!interactive) {
@@ -261,6 +263,7 @@ async function getToken(interactive) {
 
 async function clearToken() {
   await browser.storage.local.remove(["authToken", "authTokenExpiry"]);
+  updateIcon();
 }
 
 // Also revokes the refresh_token server-side (best-effort) so "Disconnect"
@@ -278,6 +281,7 @@ async function revokeAndClearToken() {
     }
   }
   await browser.storage.local.remove(["authToken", "authTokenExpiry", "refreshToken"]);
+  updateIcon();
 }
 
 // Content-script-triggered calls have no user gesture behind them, so they
@@ -288,8 +292,11 @@ async function revokeAndClearToken() {
 // refresh_token this succeeds silently far more often than it used to.
 async function getSilentToken() {
   try {
-    return await getToken(false);
+    const token = await getToken(false);
+    updateIcon();
+    return token;
   } catch (e) {
+    updateIcon();
     throw new Error("AUTH_REQUIRED");
   }
 }
@@ -325,6 +332,52 @@ function throttled(task) {
 // it via about:debugging → this extension → Inspect) so a slow sync's cause
 // (huge file count vs. repeated rate-limit backoff) is visible, not guessed.
 let syncProgress = null; // { mode:'full'|'incremental', filesSoFar, pageCount, rateLimitHits, startedAt } | null
+
+// ---------- toolbar icon ----------
+//
+// The toolbar icon shows the state at a glance: the usual green badge when
+// ready, orange while a sync or restore is running, and red when there's no
+// usable Google connection (not set up yet, signed out, or the refresh token
+// expired). "Usable" is judged from what's stored, with no network call: a
+// client id plus either a still-valid access token or a refresh token. An
+// expired or revoked refresh token is only discovered when a refresh is
+// attempted (browser start, opening a folder, the popup), and getToken()
+// drops it at that point, which flips the icon to red.
+const ICON_STATES = {
+  ready: { prefix: "icons/icon-", title: "Drive Folder Size: ready" },
+  syncing: { prefix: "icons/icon-syncing-", title: "Drive Folder Size: syncing..." },
+  disconnected: {
+    prefix: "icons/icon-disconnected-",
+    title: "Drive Folder Size: not connected to Google Drive, click to set up or reconnect",
+  },
+};
+let shownIconState = null;
+
+async function computeIconState() {
+  if (syncProgress) return "syncing";
+  const s = await browser.storage.local.get(["clientId", "authToken", "authTokenExpiry", "refreshToken"]);
+  const hasValidToken = s.authToken && s.authTokenExpiry && Date.now() < s.authTokenExpiry;
+  return s.clientId && (hasValidToken || s.refreshToken) ? "ready" : "disconnected";
+}
+
+// Purely cosmetic, so it must never be able to break a sync or a sign-in.
+async function updateIcon() {
+  try {
+    const state = await computeIconState();
+    if (state === shownIconState) return;
+    shownIconState = state;
+    const { prefix, title } = ICON_STATES[state];
+    await browser.action.setIcon({ path: { 16: `${prefix}16.png`, 32: `${prefix}32.png`, 48: `${prefix}48.png` } });
+    await browser.action.setTitle({ title });
+  } catch (e) {
+    shownIconState = null; // try again next time
+  }
+}
+
+function setSyncProgress(value) {
+  syncProgress = value;
+  updateIcon();
+}
 
 async function fetchDriveJson(url, token, attempt = 0) {
   const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
@@ -571,7 +624,7 @@ async function getIndex(token, forceCheck) {
     for (;;) {
       if (base) {
         mode = "incremental";
-        syncProgress = { mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
+        setSyncProgress({ mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt });
         try {
           const rootId = await fetchRootId(token);
           const candidate = new Map(Object.entries(base.driveFiles));
@@ -592,7 +645,7 @@ async function getIndex(token, forceCheck) {
       // back here with triedRestore set and falls through to the full sync.
       if (!triedRestore) {
         triedRestore = true;
-        syncProgress = { mode: "restore", filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
+        setSyncProgress({ mode: "restore", filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt });
         const backup = await fetchBackupBase(token, stored.indexSyncedAt);
         if (backup) {
           base = backup;
@@ -603,7 +656,7 @@ async function getIndex(token, forceCheck) {
 
       mode = "full";
       restoredFrom = null;
-      syncProgress = { mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt };
+      setSyncProgress({ mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt });
       const rootId = await fetchRootId(token);
       // Grab the checkpoint BEFORE listing, so the next incremental sync
       // also catches anything that changed while this listing was running.
@@ -637,7 +690,7 @@ async function getIndex(token, forceCheck) {
     return totals;
   })().finally(() => {
     fullSyncInFlight = null;
-    syncProgress = null;
+    setSyncProgress(null);
   });
 
   // Runs after the sync settles (so syncProgress is already cleared) and on
@@ -1003,3 +1056,6 @@ browser.runtime.onMessage.addListener((msg) => {
       return undefined;
   }
 });
+
+// Set the right icon whenever this script loads (including at browser start).
+updateIcon();

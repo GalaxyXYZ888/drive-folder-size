@@ -10,6 +10,10 @@ kicks off in the background when the browser starts, so it's usually already
 done by the time you open Drive. Sizes from the last sync show up immediately
 and update on their own once the check finishes.
 
+The toolbar icon shows the state at a glance: the usual green badge when it's
+ready, orange while a sync is running, and red when it isn't connected to
+Google Drive (not set up yet, signed out, or the connection expired).
+
 ## Install
 
 1. Download the latest `.xpi` from the
@@ -95,6 +99,7 @@ release.
 ## Files
 
 - `manifest.json`: extension manifest (MV3)
+- `icons/`: toolbar icons, the green ready badge plus orange (syncing) and red (disconnected) variants
 - `background.js`: OAuth (auth-code + PKCE, refresh tokens), full and incremental (`changes.list`) sync, background refresh on browser start and folder open, in-memory folder totals, portable snapshots (local export/import, Drive appDataFolder backup with weekly upload and automatic restore)
 - `content.js`: injects size badges into the Drive page (stored sizes first, refreshed when the sync ends), hover-resistant, tracks Drive SPA navigation
 - `popup.html`/`popup.js`: on/off toggle, live sync progress, Reconnect button, link to setup
