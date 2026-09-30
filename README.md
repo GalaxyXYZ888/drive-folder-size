@@ -110,8 +110,7 @@ release.
   sync" above.
 - **1.2.2**: The incremental sync now also kicks off silently when the
   browser starts, instead of only when a folder is first opened, so it's
-  usually already caught up by the time you get to Drive.
-- **1.3.0**: The Drive backup now refreshes itself about once a week, after
-  any sync (including the new startup one), updating the single backup file in
-  place. There's a checkbox on the setup page to turn it off, and it shows
-  when the last backup happened.
+  usually already caught up by the time you get to Drive. The Drive backup
+  also refreshes itself about once a week after a sync, updating the single
+  backup file in place. There's a checkbox on the setup page to turn it off,
+  and it shows when the last backup happened.
