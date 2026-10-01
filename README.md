@@ -15,6 +15,9 @@ it's ready, orange while a sync is running, red when it isn't connected to
 Google Drive (not set up yet, signed out, or the connection expired), and grey
 when you've switched it off with the toggle.
 
+Click the icon for the same status in words, when it last synced (and last
+backed up to Drive), a **Sync now** button, and the on/off toggle.
+
 ## Install
 
 1. Download the latest `.xpi` from the
@@ -103,5 +106,5 @@ release.
 - `icons/`: toolbar icons, a folder with a colored dot: green (ready), orange (syncing), red (disconnected) and grey (off)
 - `background.js`: OAuth (auth-code + PKCE, refresh tokens), full and incremental (`changes.list`) sync, background refresh on browser start and folder open, in-memory folder totals, portable snapshots (local export/import, Drive appDataFolder backup with weekly upload and automatic restore)
 - `content.js`: injects size badges into the Drive page (stored sizes first, refreshed when the sync ends), hover-resistant, tracks Drive SPA navigation
-- `popup.html`/`popup.js`: on/off toggle, live sync progress, Reconnect button, link to setup
+- `popup.html`/`popup.js`: on/off toggle, status with colored dot, last sync and backup times, live sync progress, Sync now and Reconnect buttons, link to setup, version
 - `options.html`/`options.js`: setup page (Client ID/secret entry, connect/test, sync now, clear cache, disconnect, export/import, Drive backup and restore, last sync and backup times)
