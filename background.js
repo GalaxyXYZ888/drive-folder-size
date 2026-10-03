@@ -379,6 +379,24 @@ async function updateIcon() {
   }
 }
 
+// Firefox suspends an event page after about 30 seconds without extension
+// activity, and a pending fetch doesn't count. A long sync or upload would be
+// killed midway: nothing saved, icon stuck on orange. Calling a cheap
+// extension API every few seconds counts as activity and prevents that.
+const KEEPALIVE_MS = 20 * 1000;
+async function keepAlive(work) {
+  const timer = setInterval(() => {
+    try {
+      browser.runtime.getPlatformInfo().catch(() => {});
+    } catch (e) {}
+  }, KEEPALIVE_MS);
+  try {
+    return await work();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 function setSyncProgress(value) {
   syncProgress = value;
   updateIcon();
@@ -617,7 +635,9 @@ async function getIndex(token, forceCheck) {
 
   const startedAt = Date.now();
 
-  fullSyncInFlight = (async () => {
+  fullSyncInFlight = keepAlive(async () => {
+    // Left behind only if this run is cut short, see the check at the end of the file.
+    await browser.storage.local.set({ syncRunningSince: startedAt });
     let files = null;
     let changesToken;
     let mode;
@@ -693,9 +713,10 @@ async function getIndex(token, forceCheck) {
       await browser.storage.local.set({ lastBackupAt: Math.max(lastBackupAt || 0, restoredFrom) });
     }
     return totals;
-  })().finally(() => {
+  }).finally(() => {
     fullSyncInFlight = null;
     setSyncProgress(null);
+    return browser.storage.local.remove("syncRunningSince").catch(() => {});
   });
 
   // Runs after the sync settles (so syncProgress is already cleared) and on
@@ -852,6 +873,10 @@ async function fetchBackupBase(token, localSyncedAt) {
 let autoBackupInFlight = false;
 
 async function maybeAutoBackup() {
+  return keepAlive(maybeAutoBackupInner);
+}
+
+async function maybeAutoBackupInner() {
   // Claimed synchronously, before the first await, so simultaneous callers
   // can't all pass the check and each start their own upload.
   if (autoBackupInFlight) return;
@@ -1067,3 +1092,16 @@ browser.runtime.onMessage.addListener((msg) => {
 
 // Set the right icon whenever this script loads (including at browser start).
 updateIcon();
+
+// A sync that was cut short (browser closed, or the page was suspended anyway)
+// leaves its marker behind. Pick it back up as soon as the script is running
+// again, which includes the moment the popup or a Drive tab wakes it, instead
+// of leaving the index stale until the next folder open.
+(async () => {
+  if (fullSyncInFlight || backgroundRefresh) return;
+  const s = await browser.storage.local.get(["syncRunningSince", "enabled"]);
+  if (!s.syncRunningSince) return;
+  console.log("[Drive Folder Size] the previous sync was interrupted, resuming");
+  await browser.storage.local.remove("syncRunningSince");
+  if (s.enabled) refreshInBackground();
+})().catch(() => {});
