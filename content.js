@@ -82,17 +82,20 @@ function computeContextKey() {
   return `unsupported:${location.pathname}`;
 }
 
+// Three significant digits, cut off rather than rounded, the way Windows
+// Explorer shows sizes (1.02 GB, 23.5 GB, 409 GB). Cutting also means 1023.9 KB
+// never turns into "1024 KB".
 function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   let i = 0;
-  let n = bytes;
-  while (n >= 1024 && i < units.length - 1) {
-    n /= 1024;
-    i++;
-  }
-  const decimals = n < 10 && i > 0 ? 1 : 0;
-  return `${n.toFixed(decimals)} ${units[i]}`;
+  while (i < units.length - 1 && bytes / 1024 ** (i + 1) >= 1) i++;
+  const n = bytes / 1024 ** i;
+  const decimals = i === 0 ? 0 : n < 10 ? 2 : n < 100 ? 1 : 0;
+  const scale = 10 ** decimals;
+  // Multiplying first keeps the cut exact: dividing by a power of 1024 is lossless.
+  const cut = Math.floor((bytes * scale) / 1024 ** i) / scale;
+  return `${cut.toFixed(decimals)} ${units[i]}`;
 }
 
 function findInitialSizeCellIndex(row) {
