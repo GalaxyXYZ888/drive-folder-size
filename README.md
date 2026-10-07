@@ -84,7 +84,8 @@ and when the last backup happened.
   Drive closed doesn't sync.
 - **Reconnecting roughly weekly**, Google's hard limit for OAuth apps left
   in Testing mode. A one-click **Reconnect** appears in the toolbar popup
-  when it's needed. It's never triggered without a deliberate click.
+  when it's needed. It's never triggered without a deliberate click, and a
+  successful reconnect starts a sync right away.
 
 ## Developing
 

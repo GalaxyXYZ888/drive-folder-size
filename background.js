@@ -61,7 +61,8 @@ browser.runtime.onInstalled.addListener(async () => {
 });
 
 // Runs the normal silent check (getIndex() skips it if a sync ran within the
-// last SYNC_CHECK_INTERVAL_MS) without making any caller wait for it. Tracked
+// last SYNC_CHECK_INTERVAL_MS, unless force is set) without making any caller
+// wait for it. Tracked
 // in one shared promise so a folder open, the startup sync, and the
 // content script's WAIT_FOR_SYNC message all refer to the same run instead of
 // starting duplicates. Silent-only, like every other background-triggered
@@ -70,11 +71,11 @@ browser.runtime.onInstalled.addListener(async () => {
 // popup/options page already surfaces that in the ordinary way.
 let backgroundRefresh = null;
 
-function refreshInBackground() {
+function refreshInBackground(force = false) {
   if (!backgroundRefresh) {
     backgroundRefresh = (async () => {
       const token = await getSilentToken();
-      await getIndex(token, false);
+      await getIndex(token, force);
     })()
       .catch(async (e) => {
         console.log(`[Drive Folder Size] background refresh skipped: ${e.message}`);
@@ -1008,16 +1009,23 @@ browser.runtime.onMessage.addListener((msg) => {
       return (async () => {
         try {
           let token;
+          let signedInAgain = false;
           try {
             token = await getToken(false);
           } catch (e) {
             token = await getToken(true);
+            signedInAgain = true;
           }
           const resp = await fetch("https://www.googleapis.com/drive/v3/about?fields=user", {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (!resp.ok) return { ok: false, error: `HTTP_${resp.status}` };
           const data = await resp.json();
+          // Connected: catch up right away instead of waiting for the next
+          // folder open. getIndex() decides between a small catch-up and a
+          // restore or full sync. After a fresh sign-in it skips the 15-minute
+          // throttle, since the index may have gone stale while disconnected.
+          if (await getSetting("enabled")) refreshInBackground(signedInAgain);
           return { ok: true, email: data.user && data.user.emailAddress };
         } catch (e) {
           return { ok: false, error: e.message || "AUTH_FAILED" };
