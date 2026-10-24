@@ -28,6 +28,10 @@
 //    itself (both have no folder id in the URL), so bouncing through one and
 //    back looked like no navigation happened at all; see computeContextKey.
 //
+// 4. Starred lists folders from all over, not the children of one folder, so
+//    there sizes are looked up by the ids of the rows on screen instead
+//    (GET_FOLDER_SIZES, see isLookupUrl / requestNewIds).
+//
 // DOM facts this relies on (verified live on drive.google.com, Aug 2026):
 //   - Each row is [role="row"][data-id="<driveFileId>"]
 //   - A folder's URL is https://drive.google.com/drive/folders/<id>
@@ -61,6 +65,12 @@ function isMyDriveRootUrl() {
 function parseFolderIdFromUrl() {
   const m = location.pathname.match(/\/drive\/(?:u\/\d+\/)?folders\/([a-zA-Z0-9_-]+)/);
   return m ? m[1] : null; // null => root ("My Drive") OR an unsupported page, see computeContextKey
+}
+
+// Pages that list folders from all over rather than the children of one
+// folder: sizes are looked up by the ids of the rows on screen instead.
+function isLookupUrl() {
+  return /\/drive\/(u\/\d+\/)?starred/.test(location.pathname);
 }
 
 function isSupportedListingUrl() {
@@ -128,7 +138,56 @@ function displayFor(entry) {
   };
 }
 
+// Lookup pages (Starred): rows scroll in and out, so each tick asks for any ids
+// it hasn't asked about yet. Files are asked about too and simply come back
+// without a size.
+let lookupMode = false;
+let requestedIds = new Set();
+let waitingForSync = false;
+
+function requestNewIds(rows) {
+  const fresh = [];
+  for (const row of rows) {
+    const id = row.getAttribute("data-id");
+    if (id && !requestedIds.has(id)) {
+      requestedIds.add(id);
+      fresh.push(id);
+    }
+  }
+  if (fresh.length) requestSizes(fresh);
+}
+
+function applyLookup(resp) {
+  const nativeDocs = new Set(resp.nativeDocs || []);
+  for (const [id, size] of Object.entries(resp.sizes || {})) {
+    folderSizes.set(id, size);
+    resultsCache.set(id, { status: "done", size, hasNativeDocs: nativeDocs.has(id) });
+  }
+  tick();
+}
+
+async function requestSizes(ids) {
+  const key = currentFolderKey;
+  const stillHere = () => key === currentFolderKey;
+  const resp = await browser.runtime.sendMessage({ type: "GET_FOLDER_SIZES", ids }).catch(() => null);
+  if (!stillHere() || !resp || !resp.ok) return;
+  applyLookup(resp);
+
+  // Same as folder pages: stored sizes first, then swap in the fresh ones once
+  // the background sync ends. One waiter at a time, however many batches asked.
+  if (!resp.refreshing || waitingForSync) return;
+  waitingForSync = true;
+  await browser.runtime.sendMessage({ type: "WAIT_FOR_SYNC" }).catch(() => null);
+  waitingForSync = false;
+  if (!stillHere()) return;
+  const fresh = await browser.runtime
+    .sendMessage({ type: "GET_FOLDER_SIZES", ids: [...requestedIds], refresh: false })
+    .catch(() => null);
+  if (stillHere() && fresh && fresh.ok) applyLookup(fresh);
+}
+
 function tick() {
+  if (lookupMode) requestNewIds(document.querySelectorAll(ROW_SELECTOR));
   if (!folderSizes.size && resultsCache.size === 0) return;
   const rows = document.querySelectorAll(ROW_SELECTOR);
   for (const row of rows) {
@@ -177,11 +236,20 @@ async function refreshFolderContext() {
   currentFolderId = key === "root" ? null : parseFolderIdFromUrl();
   folderSizes = new Map();
   hasNativeDocsForCurrentFolder = false;
+  lookupMode = false;
+  requestedIds = new Set();
 
-  if (!isSupportedListingUrl()) return;
+  if (!isSupportedListingUrl() && !isLookupUrl()) return;
 
   const enabledResp = await browser.runtime.sendMessage({ type: "GET_ENABLED" }).catch(() => null);
   if (!enabledResp || !enabledResp.enabled) return;
+
+  if (isLookupUrl()) {
+    if (currentFolderKey !== key) return; // moved on while checking
+    lookupMode = true;
+    tick();
+    return;
+  }
 
   const myRequestToken = ++contentsRequestToken;
   const folderId = currentFolderId;

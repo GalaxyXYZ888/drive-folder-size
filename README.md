@@ -70,8 +70,9 @@ and when the last backup happened.
 
 ## Known limitations
 
-- **List view only** (My Drive root and folder pages), not Grid view, Recent,
-  Starred, or Shared with me.
+- **List view only** (My Drive root, folder pages and Starred), not Grid view,
+  Recent, Trash, or Shared with me. Starred folders owned by someone else get
+  no size.
 - **Google-native files** (Docs, Sheets, Slides, Forms) don't report a byte
   size, so a folder containing them shows a slightly undercounted total.
   Shortcuts to a regular file resolve to the target's real size. Shortcuts

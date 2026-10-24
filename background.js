@@ -934,38 +934,64 @@ function sizesForFolder(index, folderId) {
 // re-request with refresh:false (which never starts another refresh, so a
 // failing sync can't loop). Only the very first sync ever, when nothing is
 // stored yet, has to be waited for.
-async function getFolderContents(folderId, refresh = true) {
+async function loadTotals(refresh) {
   const enabled = await getSetting("enabled");
-  if (!enabled) return { ok: false, error: "DISABLED" };
+  if (!enabled) return { error: "DISABLED" };
 
   const cached = await browser.storage.local.get(["driveTotals", "indexSyncedAt"]);
   if (cached.driveTotals) {
     const stale = !cached.indexSyncedAt || Date.now() - cached.indexSyncedAt >= SYNC_CHECK_INTERVAL_MS;
     if (refresh && stale) refreshInBackground();
-    return {
-      ok: true,
-      ...sizesForFolder(cached.driveTotals, folderId),
-      refreshing: refresh && (!!backgroundRefresh || !!fullSyncInFlight),
-    };
+    return { index: cached.driveTotals, refreshing: refresh && (!!backgroundRefresh || !!fullSyncInFlight) };
   }
 
   let token;
   try {
     token = await getSilentToken();
   } catch (e) {
-    return { ok: false, error: e.message || "AUTH_REQUIRED" };
+    return { error: e.message || "AUTH_REQUIRED" };
   }
 
   try {
-    const index = await getIndex(token, false);
-    return { ok: true, ...sizesForFolder(index, folderId), refreshing: false };
+    return { index: await getIndex(token, false), refreshing: false };
   } catch (e) {
     if (e.message === "AUTH_EXPIRED") {
       await clearToken();
-      return { ok: false, error: "AUTH_EXPIRED" };
+      return { error: "AUTH_EXPIRED" };
     }
-    return { ok: false, error: e.message || "UNKNOWN_ERROR" };
+    return { error: e.message || "UNKNOWN_ERROR" };
   }
+}
+
+async function getFolderContents(folderId, refresh = true) {
+  const loaded = await loadTotals(refresh);
+  if (loaded.error) return { ok: false, error: loaded.error };
+  return { ok: true, ...sizesForFolder(loaded.index, folderId), refreshing: loaded.refreshing };
+}
+
+// Sizes for specific folders by id, for pages that list folders from all over
+// (Starred) instead of the children of one folder. Ids that aren't folders in
+// the index (files, folders owned by someone else) are left out of the answer.
+const MAX_LOOKUP_IDS = 500;
+
+function sizesForIds(index, ids) {
+  const folders = new Set();
+  for (const list of Object.values(index.childFolders)) for (const id of list) folders.add(id);
+  const sizes = {};
+  const nativeDocs = [];
+  for (const id of ids.slice(0, MAX_LOOKUP_IDS)) {
+    if (!folders.has(id)) continue;
+    const t = index.totals[id] || { size: 0, hasNativeDocs: false };
+    sizes[id] = t.size;
+    if (t.hasNativeDocs) nativeDocs.push(id);
+  }
+  return { sizes, nativeDocs };
+}
+
+async function getFolderSizes(ids, refresh = true) {
+  const loaded = await loadTotals(refresh);
+  if (loaded.error) return { ok: false, error: loaded.error };
+  return { ok: true, ...sizesForIds(loaded.index, Array.isArray(ids) ? ids : []), refreshing: loaded.refreshing };
 }
 
 browser.runtime.onMessage.addListener((msg) => {
@@ -974,6 +1000,9 @@ browser.runtime.onMessage.addListener((msg) => {
   switch (msg.type) {
     case "GET_FOLDER_CONTENTS":
       return getFolderContents(msg.folderId, msg.refresh !== false);
+
+    case "GET_FOLDER_SIZES":
+      return getFolderSizes(msg.ids, msg.refresh !== false);
 
     case "WAIT_FOR_SYNC":
       // Resolves once whatever refresh is running finishes (immediately if
