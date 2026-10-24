@@ -47,6 +47,10 @@ const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 const ROOT_KEY = "root"; // our internal alias for "My Drive" itself
 const APPDATA_FILENAME = "drive-folder-size-index.json";
 const SNAPSHOT_VERSION = 1;
+// Which rules built the stored index. Raised whenever an older index is known
+// to be missing files, so it (and any Drive backup of it) gets rebuilt once.
+// 2: incremental syncs no longer miss files outside My Drive proper (Computers).
+const INDEX_RULES = 2;
 
 let fullSyncInFlight = null;
 
@@ -515,9 +519,12 @@ async function applyChanges(token, files, startPageToken, rootId) {
     url.searchParams.set("pageSize", "1000");
     url.searchParams.set(
       "fields",
-      "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, mimeType, size, parents, trashed, shortcutDetails(targetId)))"
+      "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, mimeType, size, parents, trashed, ownedByMe, shortcutDetails(targetId)))"
     );
-    url.searchParams.set("restrictToMyDrive", "true");
+    // Deliberately not restrictToMyDrive: that hides everything under
+    // Computers, so a computer added after the last full sync never showed up.
+    // Without it the feed also carries files other people own, which the
+    // ownedByMe check below filters out, matching the 'me' in owners listing.
 
     let data;
     try {
@@ -538,7 +545,7 @@ async function applyChanges(token, files, startPageToken, rootId) {
     console.log(`[Drive Folder Size] changes page ${pageCount}: ${changes.length} changed item(s)`);
 
     for (const c of changes) {
-      if (c.removed || !c.file || c.file.trashed) {
+      if (c.removed || !c.file || c.file.trashed || c.file.ownedByMe === false) {
         files.delete(c.fileId);
         continue;
       }
@@ -626,8 +633,12 @@ async function getIndex(token, forceCheck) {
     "changesToken",
     "indexSyncedAt",
     "forceFullResync",
+    "indexRules",
   ]);
-  const hasBase = stored.driveFiles && stored.changesToken;
+  // An index built under older rules is known to be missing files, and catching
+  // up from its checkpoint can't fill that in: start over with a full sync.
+  const outdated = !!(stored.driveFiles && stored.changesToken && stored.indexRules !== INDEX_RULES);
+  const hasBase = stored.driveFiles && stored.changesToken && !outdated;
 
   if (!forceCheck && stored.driveTotals && stored.indexSyncedAt) {
     if (Date.now() - stored.indexSyncedAt < SYNC_CHECK_INTERVAL_MS) return stored.driveTotals;
@@ -645,7 +656,8 @@ async function getIndex(token, forceCheck) {
     let restoredFrom = null; // modifiedTime of the Drive backup we started from, if any
     let base = hasBase ? { driveFiles: stored.driveFiles, changesToken: stored.changesToken } : null;
     // "Clear cache" means start over from scratch, so it never restores.
-    let triedRestore = !!stored.forceFullResync;
+    // An outdated index doesn't restore either: backups of it have the same gaps.
+    let triedRestore = !!stored.forceFullResync || outdated;
 
     for (;;) {
       if (base) {
@@ -698,6 +710,7 @@ async function getIndex(token, forceCheck) {
       driveTotals: totals,
       changesToken,
       indexSyncedAt: finishedAt,
+      indexRules: INDEX_RULES,
       lastSyncMeta: {
         mode,
         fromBackup: !!restoredFrom,
@@ -707,6 +720,9 @@ async function getIndex(token, forceCheck) {
       },
     });
     await browser.storage.local.remove("forceFullResync");
+    // The Drive backup predates this rebuild and has the same gaps, so make
+    // the next sync replace it right away instead of waiting out the week.
+    if (outdated) await browser.storage.local.remove(["lastBackupAt", "lastBackupAttemptAt"]);
     if (restoredFrom) {
       // The backup we started from is the newest copy in Drive, so don't
       // immediately upload the same thing back.
@@ -729,16 +745,17 @@ async function getIndex(token, forceCheck) {
 }
 
 async function clearIndex() {
-  await browser.storage.local.remove(["driveFiles", "driveTotals", "changesToken", "indexSyncedAt", "lastSyncMeta"]);
+  await browser.storage.local.remove(["driveFiles", "driveTotals", "changesToken", "indexSyncedAt", "indexRules", "lastSyncMeta"]);
 }
 
 // ---------- portable snapshots (export/import, Drive appDataFolder backup) ----------
 
 async function buildSnapshot() {
-  const stored = await browser.storage.local.get(["driveFiles", "changesToken", "indexSyncedAt"]);
+  const stored = await browser.storage.local.get(["driveFiles", "changesToken", "indexSyncedAt", "indexRules"]);
   if (!stored.driveFiles || !stored.changesToken) throw new Error("NOTHING_TO_EXPORT");
   return {
     version: SNAPSHOT_VERSION,
+    indexRules: stored.indexRules || 0,
     driveFiles: stored.driveFiles,
     changesToken: stored.changesToken,
     indexSyncedAt: stored.indexSyncedAt,
@@ -763,6 +780,9 @@ async function applySnapshot(snapshot) {
     driveTotals: totals,
     changesToken: snapshot.changesToken,
     indexSyncedAt: snapshot.indexSyncedAt || Date.now(),
+    // A snapshot from before INDEX_RULES existed counts as outdated, so the
+    // next sync rebuilds it instead of catching up from its gaps.
+    indexRules: snapshot.indexRules === INDEX_RULES ? INDEX_RULES : 0,
     lastSyncMeta: {
       mode: "restored",
       fileCount: files.size,
@@ -858,6 +878,10 @@ async function fetchBackupBase(token, localSyncedAt) {
     if (localSyncedAt && !(modifiedTime > localSyncedAt)) return null;
     const { snapshot } = await downloadAppDataFile(token, file);
     if (!snapshot || typeof snapshot !== "object" || !snapshot.driveFiles || !snapshot.changesToken) return null;
+    if (snapshot.indexRules !== INDEX_RULES) {
+      console.log("[Drive Folder Size] Drive backup not used: it was built with older rules and may be missing files");
+      return null;
+    }
     return { driveFiles: snapshot.driveFiles, changesToken: snapshot.changesToken, modifiedTime };
   } catch (e) {
     console.log(`[Drive Folder Size] Drive backup not used: ${e.message}`);
