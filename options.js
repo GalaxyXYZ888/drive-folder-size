@@ -9,6 +9,7 @@ const disconnectBtn = document.getElementById("disconnectBtn");
 const syncNowBtn = document.getElementById("syncNowBtn");
 const syncStatus = document.getElementById("syncStatus");
 const syncProgressLine = document.getElementById("syncProgress");
+const syncTimings = document.getElementById("syncTimings");
 const lastIndexInfo = document.getElementById("lastIndexInfo");
 const exportBtn = document.getElementById("exportBtn");
 const importBtn = document.getElementById("importBtn");
@@ -32,12 +33,19 @@ function formatDuration(ms) {
   return `${min}m ${sec}s`;
 }
 
+function formatMs(ms) {
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`;
+  return formatDuration(ms);
+}
+
 // Shows when the index was last brought up to date, in the Sync card and again
 // next to the backup info. Kept separate from the live progress line so a sync
 // that's running (or has just finished) can never leave this text stale or
 // hide it.
 async function refreshSyncStatus() {
   const { indexSyncedAt, lastSyncMeta } = await browser.storage.local.get(["indexSyncedAt", "lastSyncMeta"]);
+  syncTimings.hidden = true;
   if (!indexSyncedAt) {
     syncStatus.textContent = "Not synced yet. Happens automatically the first time you open a folder.";
     lastIndexInfo.textContent = "No index yet. The first sync creates it.";
@@ -62,6 +70,15 @@ async function refreshSyncStatus() {
         : "incremental check"
       : "full sync";
   syncStatus.textContent = `Last synced ${when}: ${counts}, took ${formatDuration(durationMs)} (${modeLabel}).`;
+  const t = lastSyncMeta.timings;
+  if (t) {
+    const waits = t.rateLimitHits ? `, ${t.rateLimitHits} rate-limit retries` : "";
+    syncTimings.textContent =
+      `Time spent: Drive requests ${formatMs(t.fetchMs)} (${t.pages} pages${waits}), ` +
+      `reading the saved index ${formatMs(t.readMs)}, computing totals ${formatMs(t.computeMs)}, ` +
+      `saving ${formatMs(t.saveMs)}.`;
+    syncTimings.hidden = false;
+  }
 }
 
 // Polls the background script's live progress so "Syncing…" isn't a black
