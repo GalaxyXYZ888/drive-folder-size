@@ -627,7 +627,6 @@ function computeTotals(files) {
 // prefers an incremental check over a full resync whenever we have a base
 // to patch. A full resync should really only ever happen once.
 async function getIndex(token, forceCheck) {
-  const readStart = Date.now();
   const stored = await browser.storage.local.get([
     "driveFiles",
     "driveTotals",
@@ -636,7 +635,6 @@ async function getIndex(token, forceCheck) {
     "forceFullResync",
     "indexRules",
   ]);
-  const readMs = Date.now() - readStart;
   // An index built under older rules is known to be missing files, and catching
   // up from its checkpoint can't fill that in: start over with a full sync.
   const outdated = !!(stored.driveFiles && stored.changesToken && stored.indexRules !== INDEX_RULES);
@@ -660,7 +658,6 @@ async function getIndex(token, forceCheck) {
     // "Clear cache" means start over from scratch, so it never restores.
     // An outdated index doesn't restore either: backups of it have the same gaps.
     let triedRestore = !!stored.forceFullResync || outdated;
-    const fetchStart = Date.now();
 
     for (;;) {
       if (base) {
@@ -706,32 +703,20 @@ async function getIndex(token, forceCheck) {
       break;
     }
 
-    // Where the time went, shown on the setup page. Pages and rate-limit hits
-    // are read now because the progress object is cleared once the sync ends.
-    const computeStart = Date.now();
-    const fetchMs = computeStart - fetchStart;
-    const pages = syncProgress ? syncProgress.pageCount : 0;
-    const rateLimitHits = syncProgress ? syncProgress.rateLimitHits : 0;
     const totals = computeTotals(files);
-    const saveStart = Date.now();
-    const computeMs = saveStart - computeStart;
+    const finishedAt = Date.now();
     await browser.storage.local.set({
       driveFiles: Object.fromEntries(files),
       driveTotals: totals,
       changesToken,
-      indexSyncedAt: saveStart,
+      indexSyncedAt: finishedAt,
       indexRules: INDEX_RULES,
-    });
-    const finishedAt = Date.now();
-    // Written separately because the save time can't be known before it happens.
-    await browser.storage.local.set({
       lastSyncMeta: {
         mode,
         fromBackup: !!restoredFrom,
         fileCount: files.size,
         folderCount: Object.keys(totals.totals).length,
         durationMs: finishedAt - startedAt,
-        timings: { readMs, fetchMs, computeMs, saveMs: finishedAt - saveStart, pages, rateLimitHits },
       },
     });
     await browser.storage.local.remove("forceFullResync");
