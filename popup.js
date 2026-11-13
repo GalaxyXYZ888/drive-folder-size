@@ -42,64 +42,102 @@ function render(state, detail, hint) {
   syncNowBtn.textContent = state === "syncing" ? "Syncing…" : "Sync now";
 }
 
-async function refreshTimes(state) {
-  const { indexSyncedAt, lastSyncMeta, lastBackupAt } = await browser.storage.local.get([
-    "indexSyncedAt",
-    "lastSyncMeta",
-    "lastBackupAt",
-  ]);
-  if (indexSyncedAt) {
-    const files = lastSyncMeta && lastSyncMeta.fileCount ? `, ${lastSyncMeta.fileCount.toLocaleString()} files` : "";
-    lastSync.textContent = `Last synced ${timeAgo(indexSyncedAt)}${files}`;
+// Last sync and backup times come with the state from the background, so they
+// are never a separate storage read that could wait behind a running sync.
+function renderTimes(state, info) {
+  if (info.indexSyncedAt) {
+    const files = info.fileCount ? `, ${info.fileCount.toLocaleString()} files` : "";
+    lastSync.textContent = `Last synced ${timeAgo(info.indexSyncedAt)}${files}`;
   } else {
     lastSync.textContent = state === "ready" || state === "syncing" ? "Not synced yet" : "";
   }
-  lastBackup.textContent = lastBackupAt ? `Last backup to Drive: ${timeAgo(lastBackupAt)}` : "";
+  lastBackup.textContent = info.lastBackupAt ? `Last backup to Drive: ${timeAgo(info.lastBackupAt)}` : "";
 }
+
+// While the background is busy with a sync it can take a while to answer, so
+// nothing here waits for it indefinitely. null means it didn't answer in time,
+// undefined that the message failed.
+const ANSWER_TIMEOUT_MS = 2500;
+const BUSY_TEXT = "Busy, this will update shortly.";
+
+function ask(message) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ANSWER_TIMEOUT_MS);
+    browser.runtime.sendMessage(message).then(
+      (answer) => {
+        clearTimeout(timer);
+        resolve(answer);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+    );
+  });
+}
+
+// The switch stays disabled until the first real answer, so it never shows a
+// guess.
+let toggleKnown = false;
+toggle.disabled = true;
 
 async function refreshConnStatus() {
   const seq = ++refreshSeq;
-  const apply = (state, detail, hint) => {
+  const apply = (state, detail, hint, info) => {
     // A slower, older refresh must not overwrite a newer one.
     if (seq !== refreshSeq) return;
     render(state, detail, hint);
-    return refreshTimes(state);
+    if (info) renderTimes(state, info);
   };
 
-  const { enabled, clientId } = await browser.storage.local.get(["enabled", "clientId"]);
-  if (!enabled) return apply("disabled");
-  if (!clientId) return apply("disconnected", "Not set up yet. Add your Client ID first.");
+  const s = await ask({ type: "GET_POPUP_STATE" });
+  if (!s) return apply("syncing", BUSY_TEXT);
+  if (!toggleKnown) {
+    toggleKnown = true;
+    toggle.checked = !!s.enabled;
+    toggle.disabled = false;
+  }
+  if (!s.enabled) return apply("disabled", "", undefined, s);
+  if (!s.hasClient) return apply("disconnected", "Not set up yet. Add your Client ID first.", undefined, s);
 
-  const progressResp = await browser.runtime.sendMessage({ type: "GET_SYNC_PROGRESS" }).catch(() => null);
-  if (progressResp && progressResp.progress) {
-    const p = progressResp.progress;
+  if (s.progress) {
+    const p = s.progress;
     const elapsedSec = Math.round((Date.now() - p.startedAt) / 1000);
     return apply(
       "syncing",
       p.mode === "restore"
         ? `Restoring the Drive backup… ${elapsedSec}s elapsed.`
         : `${p.mode === "incremental" ? "Checking for changes" : "Full sync"}… ${p.filesSoFar.toLocaleString()} items, ${elapsedSec}s elapsed.`,
+      undefined,
+      s,
     );
   }
-  if (syncNowRunning) return apply("syncing");
+  if (syncNowRunning) return apply("syncing", "", undefined, s);
 
-  const authCheck = await browser.runtime.sendMessage({ type: "CHECK_AUTH" }).catch(() => ({ ok: false }));
-  if (authCheck && authCheck.ok) return apply("ready");
+  const authCheck = await ask({ type: "CHECK_AUTH" });
+  if (authCheck === null) return apply("syncing", BUSY_TEXT, undefined, s);
+  if (authCheck && authCheck.ok) return apply("ready", "", undefined, s);
   // The refresh token normally renews access silently in the background,
   // so landing here means it's gone: revoked, or (Testing-mode Cloud
   // projects) past its ~7-day limit. Not a bug, just needs a fresh
   // consent. One click fixes it (this button click is a real user
   // gesture, so the interactive popup can safely open here).
-  return apply("disconnected", "Signed out. Badges will show \"?\" until you reconnect.", "reconnect");
+  return apply("disconnected", "Signed out. Badges will show \"?\" until you reconnect.", "reconnect", s);
 }
 
 (async () => {
-  const { enabled } = await browser.runtime.sendMessage({ type: "GET_ENABLED" });
-  toggle.checked = !!enabled;
   await refreshConnStatus();
   // Popups are short-lived, but while the user keeps this one open (e.g.
   // watching a sync progress), keep it live rather than a one-time snapshot.
-  setInterval(refreshConnStatus, 1500);
+  // A tick is skipped while the previous one is still waiting for an answer.
+  let polling = false;
+  setInterval(() => {
+    if (polling) return;
+    polling = true;
+    refreshConnStatus().finally(() => {
+      polling = false;
+    });
+  }, 1500);
 })();
 
 toggle.addEventListener("change", async () => {

@@ -53,6 +53,11 @@ const SNAPSHOT_VERSION = 1;
 const INDEX_RULES = 2;
 
 let fullSyncInFlight = null;
+// What the popup needs while a sync is running, kept in memory because the
+// sync is busy with the stored index and storage answers other reads only
+// after it. See getPopupState().
+let syncSnapshot = null;
+let knownEnabled; // last seen value of the on/off setting
 
 browser.runtime.onInstalled.addListener(async () => {
   const { enabled } = await browser.storage.local.get("enabled");
@@ -106,6 +111,7 @@ browser.runtime.onStartup.addListener(async () => {
 
 async function getSetting(key) {
   const result = await browser.storage.local.get(key);
+  if (key === "enabled") knownEnabled = !!result[key];
   return result[key];
 }
 
@@ -502,16 +508,32 @@ async function fetchAllFilesAsMap(token, rootId) {
   return files;
 }
 
-// Applies a changes.list delta directly onto an existing {m,s,p} file map:
-// mutates it in place and returns the new checkpoint token to save for next
-// time. Throws INVALID_CHANGES_TOKEN if Google no longer recognizes the
-// checkpoint we had (it can expire after a long enough gap), signaling the
-// caller to fall back to a full resync.
-async function applyChanges(token, files, startPageToken, rootId) {
+function sameEntry(a, b) {
+  return (
+    !!a &&
+    a.m === b.m &&
+    a.s === b.s &&
+    a.t === b.t &&
+    a.p.length === b.p.length &&
+    a.p.every((id, i) => id === b.p[i])
+  );
+}
+
+// Applies a changes.list delta onto the {m,s,p} file map. The map is loaded by
+// `loadFiles` only once a change shows up, since reading the stored index is
+// the expensive part and most checks find nothing. Returns the new checkpoint
+// token, the map (null if nothing was loaded) and how many entries really
+// changed: Drive also reports renames, views and other people's files, which
+// leave the index as it was. Throws INVALID_CHANGES_TOKEN if Google no longer
+// recognizes the checkpoint we had (it can expire after a long enough gap),
+// signaling the caller to fall back to a full resync.
+async function applyChanges(token, loadFiles, startPageToken, rootId) {
   const normalize = (id) => (id === rootId ? ROOT_KEY : id);
   let pageToken = startPageToken;
   let newStartPageToken = null;
   let pageCount = 0;
+  let files = null;
+  let changed = 0;
 
   do {
     const url = new URL("https://www.googleapis.com/drive/v3/changes");
@@ -544,19 +566,25 @@ async function applyChanges(token, files, startPageToken, rootId) {
     }
     console.log(`[Drive Folder Size] changes page ${pageCount}: ${changes.length} changed item(s)`);
 
+    if (changes.length && !files) files = await loadFiles();
+
     for (const c of changes) {
       if (c.removed || !c.file || c.file.trashed || c.file.ownedByMe === false) {
-        files.delete(c.fileId);
+        if (files.delete(c.fileId)) changed++;
         continue;
       }
-      files.set(c.file.id, toFileEntry(c.file, normalize));
+      const entry = toFileEntry(c.file, normalize);
+      if (!sameEntry(files.get(c.file.id), entry)) {
+        files.set(c.file.id, entry);
+        changed++;
+      }
     }
 
     pageToken = data.nextPageToken || null;
     if (data.newStartPageToken) newStartPageToken = data.newStartPageToken;
   } while (pageToken);
 
-  return newStartPageToken;
+  return { token: newStartPageToken, files, changed };
 }
 
 // A shortcut's own file object always reports size 0; the bytes live on
@@ -627,25 +655,36 @@ function computeTotals(files) {
 // prefers an incremental check over a full resync whenever we have a base
 // to patch. A full resync should really only ever happen once.
 async function getIndex(token, forceCheck) {
+  // Not the index itself: it can be tens of MB, and while it is being read or
+  // written every other storage read (the popup's, for one) waits behind it.
+  // It is only loaded further down, once a change has to be applied. The
+  // checkpoint token is saved together with the index, so having one means
+  // there is an index.
   const stored = await browser.storage.local.get([
-    "driveFiles",
-    "driveTotals",
     "changesToken",
     "indexSyncedAt",
     "forceFullResync",
     "indexRules",
+    "lastSyncMeta",
+    "lastBackupAt",
   ]);
   // An index built under older rules is known to be missing files, and catching
   // up from its checkpoint can't fill that in: start over with a full sync.
-  const outdated = !!(stored.driveFiles && stored.changesToken && stored.indexRules !== INDEX_RULES);
-  const hasBase = stored.driveFiles && stored.changesToken && !outdated;
+  const outdated = !!(stored.changesToken && stored.indexRules !== INDEX_RULES);
+  const hasBase = !!stored.changesToken && !outdated;
 
-  if (!forceCheck && stored.driveTotals && stored.indexSyncedAt) {
-    if (Date.now() - stored.indexSyncedAt < SYNC_CHECK_INTERVAL_MS) return stored.driveTotals;
+  if (!forceCheck && stored.indexSyncedAt && Date.now() - stored.indexSyncedAt < SYNC_CHECK_INTERVAL_MS) {
+    const { driveTotals } = await browser.storage.local.get("driveTotals");
+    if (driveTotals) return driveTotals;
   }
   if (fullSyncInFlight) return fullSyncInFlight;
 
   const startedAt = Date.now();
+  syncSnapshot = {
+    indexSyncedAt: stored.indexSyncedAt,
+    fileCount: stored.lastSyncMeta && stored.lastSyncMeta.fileCount,
+    lastBackupAt: stored.lastBackupAt,
+  };
 
   fullSyncInFlight = keepAlive(async () => {
     // Left behind only if this run is cut short, see the check at the end of the file.
@@ -654,7 +693,11 @@ async function getIndex(token, forceCheck) {
     let changesToken;
     let mode;
     let restoredFrom = null; // modifiedTime of the Drive backup we started from, if any
-    let base = hasBase ? { driveFiles: stored.driveFiles, changesToken: stored.changesToken } : null;
+    let changed = 0;
+    // A base from this computer holds only the checkpoint; the files are read
+    // from storage if and when a change needs them. One from a Drive backup
+    // already carries its files.
+    let base = hasBase ? { changesToken: stored.changesToken } : null;
     // "Clear cache" means start over from scratch, so it never restores.
     // An outdated index doesn't restore either: backups of it have the same gaps.
     let triedRestore = !!stored.forceFullResync || outdated;
@@ -665,9 +708,19 @@ async function getIndex(token, forceCheck) {
         setSyncProgress({ mode, filesSoFar: 0, pageCount: 0, rateLimitHits: 0, startedAt });
         try {
           const rootId = await fetchRootId(token);
-          const candidate = new Map(Object.entries(base.driveFiles));
-          changesToken = await applyChanges(token, candidate, base.changesToken, rootId);
-          files = candidate;
+          const source = base;
+          const loadFiles = async () => {
+            if (source.driveFiles) return new Map(Object.entries(source.driveFiles));
+            const { driveFiles } = await browser.storage.local.get("driveFiles");
+            if (!driveFiles) throw new Error("INVALID_CHANGES_TOKEN");
+            return new Map(Object.entries(driveFiles));
+          };
+          const result = await applyChanges(token, loadFiles, source.changesToken, rootId);
+          changesToken = result.token;
+          changed = result.changed;
+          // Nothing loaded means nothing changed, which only matters for a
+          // backup base: it still has to be saved as this computer's index.
+          files = result.files || (restoredFrom ? await loadFiles() : null);
           break;
         } catch (e) {
           if (e.message !== "INVALID_CHANGES_TOKEN") throw e;
@@ -703,6 +756,29 @@ async function getIndex(token, forceCheck) {
       break;
     }
 
+    // A check that found nothing to change keeps the stored index and totals
+    // as they are. Saving them again would hold storage busy for seconds with
+    // identical data. Only the checkpoint and the sync time move forward.
+    if (mode === "incremental" && !restoredFrom && !changed && stored.lastSyncMeta) {
+      const { driveTotals } = await browser.storage.local.get("driveTotals");
+      if (driveTotals) {
+        const finishedAt = Date.now();
+        await browser.storage.local.set({
+          changesToken,
+          indexSyncedAt: finishedAt,
+          lastSyncMeta: { ...stored.lastSyncMeta, mode, fromBackup: false, durationMs: finishedAt - startedAt },
+        });
+        await browser.storage.local.remove("forceFullResync");
+        return driveTotals;
+      }
+    }
+    // Missing totals or sync info (an index that was never fully recorded):
+    // rebuild them from the stored files instead.
+    if (!files) {
+      const { driveFiles } = await browser.storage.local.get("driveFiles");
+      files = new Map(Object.entries(driveFiles || {}));
+    }
+
     const totals = computeTotals(files);
     const finishedAt = Date.now();
     await browser.storage.local.set({
@@ -732,6 +808,7 @@ async function getIndex(token, forceCheck) {
     return totals;
   }).finally(() => {
     fullSyncInFlight = null;
+    syncSnapshot = null;
     setSyncProgress(null);
     return browser.storage.local.remove("syncRunningSince").catch(() => {});
   });
@@ -1018,6 +1095,30 @@ async function getFolderSizes(ids, refresh = true) {
   return { ok: true, ...sizesForIds(loaded.index, Array.isArray(ids) ? ids : []), refreshing: loaded.refreshing };
 }
 
+// Everything the popup shows, in one answer. While a sync is running it comes
+// from memory: the sync is busy reading and writing the stored index, and
+// storage serves other reads only after it, which left the popup blank until
+// the sync was over.
+async function getPopupState() {
+  if (syncProgress) {
+    return {
+      progress: syncProgress,
+      enabled: knownEnabled !== false,
+      hasClient: true,
+      ...(syncSnapshot || {}),
+    };
+  }
+  const s = await browser.storage.local.get(["enabled", "clientId", "indexSyncedAt", "lastSyncMeta", "lastBackupAt"]);
+  return {
+    progress: null,
+    enabled: !!s.enabled,
+    hasClient: !!s.clientId,
+    indexSyncedAt: s.indexSyncedAt,
+    fileCount: s.lastSyncMeta && s.lastSyncMeta.fileCount,
+    lastBackupAt: s.lastBackupAt,
+  };
+}
+
 browser.runtime.onMessage.addListener((msg) => {
   if (!msg || !msg.type) return;
 
@@ -1042,7 +1143,11 @@ browser.runtime.onMessage.addListener((msg) => {
     case "GET_ENABLED":
       return getSetting("enabled").then((v) => ({ enabled: !!v }));
 
+    case "GET_POPUP_STATE":
+      return getPopupState();
+
     case "SET_ENABLED":
+      knownEnabled = !!msg.enabled;
       return setSetting("enabled", !!msg.enabled).then(() => {
         updateIcon();
         return { ok: true };
